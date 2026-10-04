@@ -27,15 +27,20 @@ local directory with `file://`).
 ## Workflow
 
 - **`main` only accepts pull requests** (GitHub ruleset "Main"): no direct pushes, no
-  force-pushes, no deletion, no bypass for anyone. A PR needs three checks to pass,
-  matched by job name: `test (ubuntu-latest)`, `test (macos-latest)`, `msrv`. Renaming
+  force-pushes, no deletion, no bypass for anyone. A PR needs these checks to pass,
+  matched by job name: `test (ubuntu-latest)`, `test (macos-latest)`, `msrv`,
+  `release checklist`. Renaming
   a CI job means updating the ruleset or PRs wait forever. PRs are squash-merged.
 - **Local layout.** The user keeps this repo as a bare clone with one worktree per
   branch: `~/Developer/GitHub/anwarahmed/typeshelf/main` plus a sibling directory per
   feature branch (`git worktree add -b <branch> <branch> origin/main` from the bare
   repo). Remove the worktree and branch after the PR merges, then fast-forward `main`.
-- **Releasing** is merging a version bump; see "Decisions". A merge without one
-  publishes nothing.
+- **Releasing** is merging a version bump; a merge without one publishes nothing.
+  **Follow [RELEASING.md](RELEASING.md) every time, every step.** The release PR's
+  description must carry its checklist with every line ticked (`gh pr create --body`
+  does not add it for you), or the `release checklist` check fails; the user asked
+  that no release step can be skipped. Tick a line only after doing what it says.
+  Then do its "After merging" steps and report each one.
 - **Sibling repo:** https://github.com/anwarahmed/homebrew-tap (Homebrew formula,
   generated). It takes direct pushes; its ruleset only blocks force-push and deletion,
   because its bot commits the formula to `main`.
@@ -314,4 +319,5 @@ restart. `install.sh` can be tested without a release by pointing
 - Not built: per-key heatmap on a keyboard layout, light/dark auto-switch.
 - The Intel macOS binary is cross-built on an Apple silicon runner and is never
   executed in CI; the other three targets are smoke-tested.
-- Not verified by hand: anything on a real Mac, and the truecolor themes' appearance.
+- Not verified by hand: the truecolor themes' appearance. On a real Mac only the
+  Homebrew install and upgrade, the cursor, and wheel scrolling have been tried.
