@@ -30,7 +30,7 @@ Usage:
   typeshelf                 open the library
   typeshelf <file>          add a text or markdown file to your texts and open it
   typeshelf sync            download every book for offline use
-  typeshelf update          check for a newer version now and install it
+  typeshelf update          check for a newer release now and install it
   typeshelf --help | --version
 
 Environment:

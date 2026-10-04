@@ -7,7 +7,7 @@ modeled on the web app [TypeLit.io](https://www.typelit.io/). Targets macOS and 
 
 ```sh
 cargo run --release                          # run (debug builds parse big books slowly)
-cargo test                                   # unit tests (normalize, parse, paginate, engine)
+cargo test                                   # unit tests (normalize, parse, paginate, engine, store, update)
 cargo clippy --all-targets -- -D warnings    # CI fails on any warning
 cargo fmt                                    # rustfmt.toml: max_width 160
 cargo run --release -- build-catalog .books-cache   # regenerate assets/catalog.json
@@ -24,7 +24,25 @@ when no binary exists for the platform. `--link` symlinks to the checkout's buil
 `TYPESHELF_RELEASE_URL` points it at another download base (used to test it against a
 local directory with `file://`).
 
+## Workflow
+
+- **`main` only accepts pull requests** (GitHub ruleset "Main"): no direct pushes, no
+  force-pushes, no deletion, no bypass for anyone. A PR needs three checks to pass,
+  matched by job name: `test (ubuntu-latest)`, `test (macos-latest)`, `msrv`. Renaming
+  a CI job means updating the ruleset or PRs wait forever. PRs are squash-merged.
+- **Local layout.** The user keeps this repo as a bare clone with one worktree per
+  branch: `~/Developer/GitHub/anwarahmed/typeshelf/main` plus a sibling directory per
+  feature branch (`git worktree add -b <branch> <branch> origin/main` from the bare
+  repo). Remove the worktree and branch after the PR merges, then fast-forward `main`.
+- **Releasing** is merging a version bump; see "Decisions". A merge without one
+  publishes nothing.
+- **Sibling repo:** https://github.com/anwarahmed/homebrew-tap (Homebrew formula,
+  generated). It takes direct pushes; its ruleset only blocks force-push and deletion,
+  because its bot commits the formula to `main`.
+
 ## Resources
+
+- Releases: https://github.com/anwarahmed/typeshelf/releases
 
 - Book source: https://github.com/mlschmitt/classic-books-markdown — 756 public-domain
   books, ~330 MB, one `Author/Title.md` per book. `assets/catalog.json` was built from
@@ -164,7 +182,11 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
     `homebrew-` name). Its own workflow regenerates `Formula/typeshelf.rb` from the
     latest release on a schedule, and tests `brew install` on macOS and Linux. It lives
     apart because the formula needs the release's checksums, which only exist after
-    the merge, and `main` here only accepts PRs.
+    the merge, and `main` here only accepts PRs. The tap polls every three hours, so it
+    can lag a release; `gh workflow run update.yml --repo anwarahmed/homebrew-tap`
+    forces it. GitHub disables scheduled workflows after 60 days without repo
+    activity, which would silently stop the formula following releases. Setting a
+    `TAP_TOKEN` secret here makes each release trigger the tap directly.
   - *AUR* - package `typeshelf-bin`. `packaging/aur/render.sh` fills `PKGBUILD.in` and
     `SRCINFO.in` per release. `.SRCINFO` has its own template because releases build on
     Ubuntu, which has no `makepkg`; if you change one template change the other, and
@@ -193,7 +215,7 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   and ratatui 0.30 needs it. An older toolchain gets Cargo's clear "requires rustc
   1.88" message instead of a syntax error. CI's `test` jobs use latest stable, so a
   separate `msrv` job builds and tests on exactly 1.88; raise both together.
-- **No argument-parsing or regex crates**; the CLI is three commands and the markdown
+- **No argument-parsing or regex crates**; the CLI is a handful of subcommands and the markdown
   cleanup is a small hand-written scanner in `parse::clean_inline`.
 
 ## Logs
@@ -203,7 +225,8 @@ When something misbehaves, read the log first. A build run from `target/` writes
 `~/.local/state/typeshelf/typeshelf.log`; `TYPESHELF_LOG` overrides both. It rotates to
 `.log.1` past 1 MB.
 
-It records: startup (version, OS, TERM, settings), every book open (chapters, parse
+It records: startup (version, commit, OS, TERM, settings), the update check and its
+outcome (including why it was skipped), every book open (chapters, parse
 time, saved progress), downloads, each typing session start (chapter, page, saved
 cursor, resume cell), pages left part-way and completed, setting changes, every footer
 message shown to the user (`toast:` lines, which is where errors surface), and panics
@@ -241,11 +264,21 @@ tmux capture-pane -t ts -p        # add -e to see colors
 tmux kill-session -t ts
 ```
 
+Two traps when scripting tmux: `send-keys Escape` immediately followed by another key
+arrives as Alt+key, so pause between them; and `gh run list` right after a push can
+return the previous run, so match on the commit before trusting a result.
+
 Also resize to something tiny (`tmux resize-window -t ts -x 8 -y 3`) — layout math must
 use saturating arithmetic and never panic.
 
 For parser changes, run `dump` over the corpus and look for leftover markup, and
 re-run `build-catalog` (chapter counts and lengths in the catalog come from the parser).
+
+To test the self-update, build a copy with a lower `version` in a scratch copy of the
+source, put the binary outside any checkout (a checkout build never updates), and run
+it with throwaway `XDG_*` directories: it should update to the latest release and
+restart. `install.sh` can be tested without a release by pointing
+`TYPESHELF_RELEASE_URL` at a `file://` directory holding a binary and `SHA256SUMS`.
 
 ## Known gaps and ideas
 
@@ -259,5 +292,7 @@ re-run `build-catalog` (chapter counts and lengths in the catalog come from the 
 - `books_dir` can only be set by editing the config file or via `TYPESHELF_BOOKS`.
 - TypeLit features not built: achievements, named ranks, non-English libraries
   (the book repo is English only), accounts and cross-device sync, visual effects.
-- Not built: accounts or
-  sync between machines, per-key heatmap on a keyboard layout, light/dark auto-switch.
+- Not built: per-key heatmap on a keyboard layout, light/dark auto-switch.
+- The Intel macOS binary is cross-built on an Apple silicon runner and is never
+  executed in CI; the other three targets are smoke-tested.
+- Not verified by hand: anything on a real Mac, and the truecolor themes' appearance.
