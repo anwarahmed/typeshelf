@@ -10,7 +10,7 @@ affiliated with or endorsed by TypeLit, and shares no code or content with it.
   downloaded on demand and cached
 - Your own texts: `typeshelf notes.txt`
 - Progress saved down to the character; reopen a chapter and the cursor is where you left it
-- Speed, accuracy, daily volume and most-missed keys
+- Speed and accuracy per page, chapter and book; daily volume, most-missed keys and levels
 - Themes, including one that follows your terminal's own colors
 
 ## Install
@@ -23,16 +23,16 @@ Pick whichever suits your machine. Each installs the `typeshelf` command.
 curl -fsSL https://raw.githubusercontent.com/anwarahmed/typeshelf/main/install.sh | sh
 ```
 
-This downloads the latest release for your system into `~/.local/bin`. Nothing else
-needs to be installed first. The Linux binaries are statically linked, so the same file
+This downloads the latest release for your system into `~/.local/bin` and checks it
+against the release's checksums. Nothing else needs to be installed first. The Linux binaries are statically linked, so the same file
 runs on any distribution, on x86-64 and ARM.
 
 If the script says `~/.local/bin` is not on your `PATH` (it isn't by default on macOS),
 add it and open a new terminal:
 
 ```sh
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc    # macOS
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # Linux
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc    # zsh (the macOS default)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash
 ```
 
 ### Homebrew (macOS and Linux)
@@ -41,19 +41,22 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # Linux
 brew install anwarahmed/tap/typeshelf
 ```
 
+The tap picks up a new release within a few hours of it being published.
+
 ### Arch Linux (pacman package)
 
 Each release includes a `PKGBUILD`, so typeshelf can be installed as a regular pacman
-package:
+package. This needs `base-devel` (`sudo pacman -S --needed base-devel`).
 
 ```sh
-mkdir typeshelf-bin && cd typeshelf-bin
+mkdir -p typeshelf-bin && cd typeshelf-bin
 curl -fsSLO https://github.com/anwarahmed/typeshelf/releases/latest/download/PKGBUILD
 makepkg -si
 ```
 
-It is not in the AUR yet (new AUR account registration is currently closed), so
-repeat these steps to update.
+It is not in the AUR yet (new AUR account registration is currently closed). A copy
+installed this way does not update itself; run the same three commands again to move
+to a newer release.
 
 ### From source
 
@@ -61,29 +64,37 @@ Needs Rust 1.88 or newer, git and a C compiler.
 
 ```sh
 git clone https://github.com/anwarahmed/typeshelf.git && cd typeshelf
-./install.sh --source     # build and copy to ~/.local/bin
-./install.sh --link       # or: symlink to this checkout's build (for development)
+./install.sh --source
 ```
+
+That builds the checkout and copies the result to `~/.local/bin`. For development, use
+`./install.sh --link` instead: it symlinks to the checkout's build, so each
+`cargo build --release` is picked up without reinstalling.
+
+`TYPESHELF_BIN_DIR` changes where any of the script's modes install to.
 
 ### Updating
 
 | Installed with | How it updates |
 |----------------|----------------|
-| The install script | By itself. Each time typeshelf starts it checks for a newer release and, if there is one, downloads it and restarts — a few seconds. Offline, it just starts. |
+| The install script, including `--source` | By itself. Each time typeshelf starts it checks for a newer release and, if there is one, downloads it and restarts — a few seconds. Offline, it just starts. |
 | Homebrew | `brew upgrade typeshelf` |
-| pacman package | Download the new `PKGBUILD` and run `makepkg -si` again |
-| `--link` or a source checkout | `git pull && cargo build --release` |
+| pacman package | Run the three install commands again |
+| `--link`, or running from a checkout | `git pull && cargo build --release` |
 
-`typeshelf update` checks on demand. To stop the automatic check, turn off
-Settings → "Update on start" or set `TYPESHELF_NO_UPDATE=1`. Downloads are verified
-against the release's SHA-256 checksums.
+For a copy that updates itself, `typeshelf update` checks on demand. To stop the
+automatic check, turn off Settings → "Update on start" or set `TYPESHELF_NO_UPDATE=1`.
+Updates are verified against the release's SHA-256 checksums, and never move to an
+older version.
 
 ### Uninstalling
 
+Use the line that matches how you installed it:
+
 ```sh
-./install.sh --uninstall          # or: rm ~/.local/bin/typeshelf
-brew uninstall typeshelf
-sudo pacman -R typeshelf-bin
+rm ~/.local/bin/typeshelf         # install script (or ./install.sh --uninstall)
+brew uninstall typeshelf          # Homebrew
+sudo pacman -R typeshelf-bin      # pacman package
 ```
 
 Your settings, progress and cached books stay where they are; see [Files](#files) if you
@@ -96,16 +107,23 @@ typeshelf                 open the library
 typeshelf <file>          add a text or markdown file to your texts and open it
 typeshelf sync            download every book for offline use (about 330 MB)
 typeshelf update          check for a newer release now and install it
+typeshelf --help          list commands and environment variables
+typeshelf --version       print the version and the commit it was built from
 ```
 
-Press `?` on any screen for its keys. The short version:
+Press `?` for the keys of the screen you are on (everywhere except while typing, where
+`?` is a character to type). The short version:
 
-| Where    | Keys                                                                          |
-|----------|-------------------------------------------------------------------------------|
-| Anywhere | `1` `2` `3` library / stats / settings · `j` `k` move · `g` `G` ends · `ctrl-c` quit |
-| Library  | `enter` open · `/` search · `tab` switch shelf · `s` sort · `c` continue last book   |
-| Book     | `enter` type chapter · `c` continue · `r` reset progress · `esc` back                |
-| Typing   | `backspace` fix · `ctrl-w` delete word · `ctrl-r` restart page · `ctrl-n` / `ctrl-p` next / previous page · `esc` back |
+| Where    | Keys |
+|----------|------|
+| Lists and menus | `1` `2` `3` library / stats / settings · `j` `k` or arrows move · `g` `G` first / last · `ctrl-d` `ctrl-u` jump · `q` back |
+| Library  | `enter` open · `/` search · `tab` switch shelf · `s` sort · `c` continue last book · `d` delete one of your texts · `q` quit |
+| Book     | `enter` type chapter · `c` continue where you left off · `r` reset progress · `esc` back |
+| Typing   | `backspace` fix · `ctrl-w` or `alt-backspace` delete word · `ctrl-r` restart page · `ctrl-n` / `ctrl-p` next / previous page · `esc` back to chapters |
+| Anywhere | `ctrl-c` quit |
+
+Leaving a page part-way keeps your place: the chapter reopens with the cursor where
+you stopped.
 
 While typing: curly quotes, dashes and accented letters are typed with their plain
 keys (`é` is `e`, `—` is `-`), and characters with no key at all (Greek, `£`) are
@@ -121,33 +139,37 @@ skipped for you. Line breaks take `enter` (or `space`, unless you turn that off)
 | Book cache    | `~/.cache/typeshelf/books/`             |
 | Log           | `~/.local/state/typeshelf/typeshelf.log` |
 
-The same paths are used on macOS; `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and
-`XDG_CACHE_HOME` are honored. If you already have a clone of the books repo, point
+The same paths are used on macOS; `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+`XDG_CACHE_HOME` and `XDG_STATE_HOME` are honored. If you already have a clone of the books repo, point
 `TYPESHELF_BOOKS` (or `books_dir` in the settings file) at it and nothing is downloaded.
 
 ## Troubleshooting
 
-typeshelf keeps a log of what it did (books opened, downloads, where a page was left,
-errors, crashes with a backtrace) — never what you typed. It lives at
+typeshelf keeps a log of what it did (books opened, downloads, update checks, where a
+page was left, errors, crashes with a backtrace) — never what you typed. It lives at
 `~/.local/state/typeshelf/typeshelf.log`, or `logs/typeshelf.log` in the checkout when
 you run a build straight from `target/`. Set `TYPESHELF_LOG` to put it elsewhere.
 
 ## Development
 
 ```sh
+cargo run --release
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
-See [CLAUDE.md](CLAUDE.md) for the architecture and the decisions behind it.
+Changes reach `main` through pull requests. To publish a release, bump `version` in
+`Cargo.toml` in a pull request; when it merges, the binaries are built and released
+automatically. See [CLAUDE.md](CLAUDE.md) for the architecture, the release process and
+the decisions behind them.
 
 ## License
 
 The code is released under the [MIT License](LICENSE).
 
 The books are not part of this repository and are not covered by that license. The app
-embeds only a catalog of titles and authors, and downloads a book's text from
+embeds only a catalog (titles, authors, years and lengths), and downloads a book's text from
 [classic-books-markdown](https://github.com/mlschmitt/classic-books-markdown) when you
 open it. That collection describes its titles as public domain; it includes works from
 as late as the 1960s whose status depends on your country, so check before
