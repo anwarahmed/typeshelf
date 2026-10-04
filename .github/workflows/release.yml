@@ -131,12 +131,15 @@ jobs:
           git push origin HEAD:master
       - name: Ask the Homebrew tap to update
         # Optional: the tap also checks on a schedule. TAP_TOKEN is a token allowed to
-        # run workflows in anwarahmed/homebrew-tap.
+        # run workflows in anwarahmed/homebrew-tap. Without it the step warns rather than
+        # passing quietly, because the formula then trails the release by up to three hours.
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           if [ -z "$TAP_TOKEN" ]; then
-            echo "TAP_TOKEN is not set; the Homebrew tap will update on its own schedule." >> "$GITHUB_STEP_SUMMARY"
+            msg="TAP_TOKEN is not set, so the Homebrew tap was not told about $VERSION. It updates on its own schedule (every three hours); to update it now run: gh workflow run update.yml --repo anwarahmed/homebrew-tap"
+            echo "::warning title=Homebrew tap not notified::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           GH_TOKEN="$TAP_TOKEN" gh workflow run update.yml --repo anwarahmed/homebrew-tap

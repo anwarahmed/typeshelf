@@ -204,7 +204,8 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
     can lag a release; `gh workflow run update.yml --repo anwarahmed/homebrew-tap`
     forces it. GitHub disables scheduled workflows after 60 days without repo
     activity, which would silently stop the formula following releases. Setting a
-    `TAP_TOKEN` secret here makes each release trigger the tap directly.
+    `TAP_TOKEN` secret here makes each release trigger the tap directly; without it
+    the release run carries a "Homebrew tap not notified" warning.
   - *AUR* - package `typeshelf-bin`. `packaging/aur/render.sh` fills `PKGBUILD.in` and
     `SRCINFO.in` per release. `.SRCINFO` has its own template because releases build on
     Ubuntu, which has no `makepkg`; if you change one template change the other, and
