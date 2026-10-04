@@ -20,7 +20,7 @@ use std::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::SetCursorStyle;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 
 use app::App;
@@ -126,6 +126,8 @@ fn main() -> ExitCode {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         log::error!("panic: {info}\n{}", std::backtrace::Backtrace::force_capture());
+        // ratatui's hook does not know the mouse was captured.
+        let _ = execute!(stdout(), DisableMouseCapture);
         default_hook(info)
     }));
 
@@ -207,6 +209,8 @@ impl FrameWriter {
 fn run(app: &mut App) -> io::Result<()> {
     // Raw mode, alternate screen and the panic hook; drawing goes through `FrameWriter` instead.
     drop(ratatui::init());
+    // For the wheel in the lists. While captured, selecting text in the terminal needs shift (option on macOS).
+    execute!(stdout(), EnableMouseCapture)?;
     let frames = FrameWriter::default();
     let mut terminal = Terminal::new(CrosstermBackend::new(frames.clone()))?;
     let mut cursor = String::new();
@@ -224,8 +228,10 @@ fn run(app: &mut App) -> io::Result<()> {
             Ok(true) => loop {
                 match event::read() {
                     Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => app.on_key(key),
+                    Ok(Event::Mouse(mouse)) => app.on_mouse(mouse),
                     Ok(_) => {}
                     Err(e) => {
+                        let _ = execute!(stdout(), DisableMouseCapture);
                         ratatui::restore();
                         return Err(e);
                     }
@@ -242,7 +248,7 @@ fn run(app: &mut App) -> io::Result<()> {
             break Ok(());
         }
     };
-    let _ = execute!(stdout(), SetCursorStyle::DefaultUserShape);
+    let _ = execute!(stdout(), SetCursorStyle::DefaultUserShape, DisableMouseCapture);
     ratatui::restore();
     result
 }

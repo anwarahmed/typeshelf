@@ -116,7 +116,7 @@ Press `?` for the keys of the screen you are on (everywhere except while typing,
 
 | Where    | Keys |
 |----------|------|
-| Lists and menus | `1` `2` `3` library / stats / settings · `j` `k` or arrows move · `g` `G` first / last · `ctrl-d` `ctrl-u` jump · `q` back |
+| Lists and menus | `1` `2` `3` library / stats / settings · `j` `k`, arrows or the mouse wheel move · `g` `G` first / last · `ctrl-d` `ctrl-u` jump · `q` back |
 | Library  | `enter` open · `/` search · `tab` switch shelf · `s` sort · `c` continue last book · `d` delete one of your texts · `q` quit |
 | Book     | `enter` type chapter · `c` continue where you left off · `r` reset progress · `esc` back |
 | Typing   | `backspace` fix · `ctrl-w` or `alt-backspace` delete word · `ctrl-r` restart page · `ctrl-n` / `ctrl-p` next / previous page · `esc` back to chapters |

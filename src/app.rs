@@ -3,7 +3,7 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 use crate::engine::{Session, Stats};
 use crate::library::Library;
@@ -537,6 +537,29 @@ impl App {
                     }
                 },
             },
+        }
+    }
+
+    /// The wheel moves the selection in the lists; the list follows it, as with the keys.
+    /// Everything else the mouse does is ignored.
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        let d = match mouse.kind {
+            MouseEventKind::ScrollDown => 1,
+            MouseEventKind::ScrollUp => -1,
+            _ => return,
+        };
+        if self.help || self.confirm.is_some() || self.loading.is_some() {
+            return;
+        }
+        match self.screen {
+            Screen::Library => self.lib_sel = step(self.filtered.len(), self.lib_sel, d),
+            Screen::Book => {
+                if let Some(open) = &mut self.open {
+                    open.sel = step(open.book.chapters.len(), open.sel, d);
+                }
+            }
+            Screen::Settings => self.settings_sel = step(SETTING_LABELS.len(), self.settings_sel, d),
+            _ => {}
         }
     }
 
