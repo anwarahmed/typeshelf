@@ -15,13 +15,29 @@ affiliated with or endorsed by TypeLit, and shares no code or content with it.
 
 ## Install
 
-Requires a [Rust toolchain](https://rustup.rs/).
+Requires a [Rust toolchain](https://rustup.rs/) and git. This builds typeshelf and puts
+it in `~/.local/bin`, on macOS and Linux:
 
 ```sh
-cargo install --path .
-# or just run it from the checkout
-cargo run --release
+curl -fsSL https://raw.githubusercontent.com/anwarahmed/typeshelf/main/install.sh | sh
 ```
+
+After that it keeps itself current: each time it starts, typeshelf checks GitHub for a
+newer version and, if there is one, rebuilds and restarts (a minute or two, only when
+something changed). Offline, it just starts. `typeshelf update` does the same check on
+demand; turn the automatic one off under Settings → "Update on start" or with
+`TYPESHELF_NO_UPDATE=1`.
+
+From a clone of the repo:
+
+```sh
+./install.sh              # build and copy to ~/.local/bin
+./install.sh --link       # symlink to this checkout's build instead (for development)
+./install.sh --uninstall  # remove it; settings and progress are kept
+```
+
+Set `TYPESHELF_BIN_DIR` to install somewhere else. If `~/.local/bin` is not on your
+`PATH` (it isn't by default on macOS), the script prints the line to add.
 
 ## Use
 
@@ -29,6 +45,7 @@ cargo run --release
 typeshelf                 open the library
 typeshelf <file>          add a text or markdown file to your texts and open it
 typeshelf sync            download every book for offline use (about 330 MB)
+typeshelf update          check for a newer version now and install it
 ```
 
 Press `?` on any screen for its keys. The short version:

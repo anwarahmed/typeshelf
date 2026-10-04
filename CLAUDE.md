@@ -16,6 +16,12 @@ cargo run --release -- dump <file.md>        # print how a file parses (chapters
 
 `build-catalog` and `dump` are maintainer commands, deliberately left out of `--help`.
 
+`install.sh` (POSIX sh, macOS + Linux) builds with `cargo build --release --locked` and
+copies the binary to `~/.local/bin` (`TYPESHELF_BIN_DIR` overrides). Run from a
+checkout it builds that checkout; piped from curl it clones the repo to a temp dir.
+`--link` symlinks to the checkout's build, `--uninstall` removes it. It never installs
+Rust itself and never edits shell profiles - it only prints what to add to `PATH`.
+
 ## Resources
 
 - Book source: https://github.com/mlschmitt/classic-books-markdown — 756 public-domain
@@ -45,6 +51,7 @@ Single binary crate, no async. One file per concern in `src/`:
 | `library.rs`   | Embedded catalog, download + disk cache, user texts, catalog builder |
 | `store.rs`     | `Settings` and `State` (progress, history, missed keys) as JSON on disk |
 | `theme.rs`     | Color themes |
+| `update.rs`    | Startup self-update: compare build commit with GitHub, rebuild via `install.sh`, re-exec |
 | `log.rs`       | Append-only trace log and the `log::info!` / `warning!` / `error!` macros |
 
 Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `paginate` →
@@ -120,6 +127,18 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
 - **Metrics.** WPM = correct characters / 5 / active minutes. Active time sums the gaps
   between keystrokes, each capped at 5 s, so stepping away does not tank the number.
   Accuracy = correct keystrokes / all keystrokes (backspaces are free).
+- **Self-update on start** (asked for by the user: "always updates to the latest
+  version before starting"). There are no release binaries, so "latest version" means
+  the head of `main`. `build.rs` stamps the binary with its commit (`update::COMMIT`);
+  at startup `update::before_start` asks the GitHub API for main's commit (3 s timeout,
+  silent when offline) and, if it differs, clones the repo into the cache dir, runs
+  that clone's `install.sh` over the running binary's directory, and re-execs with
+  `TYPESHELF_NO_UPDATE=1` so it can't loop. A failed build keeps the current version.
+  It deliberately does **not** update: builds run from a checkout's `target/` (incl.
+  `install.sh --link`), builds stamped `-dirty`, or when the setting/env var is off.
+  Consequences to keep in mind: every push to `main` is built and run on every machine
+  at next launch, so `main` must always build; and a copy installed from a checkout
+  with unpushed commits will be replaced by what is on GitHub.
 - **Levels.** TypeLit has ranks; here `State::level` derives a level from total
   characters typed (level `n` at `500 * n * (n - 1)`). It is computed from history,
   never stored. `State::averages` gives per-book and per-chapter speed for the book
