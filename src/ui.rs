@@ -678,6 +678,7 @@ fn draw_settings<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(
         "When on, the cursor waits until you type the right key.",
         "When on, Space is accepted at the end of a line as well as Enter.",
         "Show speed and accuracy while typing, not only afterwards.",
+        "Check GitHub for a newer version each time typeshelf starts, and rebuild if there is one.",
     ];
     lines.push(Line::from(Span::styled(help[app.settings_sel], st.dim)));
     lines.push(Line::raw(""));

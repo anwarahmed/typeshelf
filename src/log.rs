@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use chrono::Local;
 
-use crate::store::state_dir;
+use crate::store::{checkout_root, state_dir};
 
 /// The log is rotated to `<name>.1` at startup once it passes this size.
 const MAX_BYTES: u64 = 1 << 20;
@@ -21,12 +21,7 @@ pub fn path() -> PathBuf {
     if let Some(p) = std::env::var_os("TYPESHELF_LOG").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
-    let checkout = std::env::current_exe().ok().and_then(|exe| {
-        let target = exe.parent()?.parent()?;
-        let root = target.parent()?;
-        (target.file_name()? == "target" && root.join("Cargo.toml").exists()).then(|| root.to_path_buf())
-    });
-    match checkout {
+    match checkout_root() {
         Some(root) => root.join("logs").join("typeshelf.log"),
         None => state_dir().join("typeshelf.log"),
     }

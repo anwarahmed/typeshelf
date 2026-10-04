@@ -87,7 +87,8 @@ pub struct Typing {
     pub result: Option<Stats>,
 }
 
-pub const SETTING_LABELS: [&str; 7] = ["Theme", "Page length", "Text width", "Cursor", "Stop on error", "Space types line breaks", "Live stats while typing"];
+pub const SETTING_LABELS: [&str; 8] =
+    ["Theme", "Page length", "Text width", "Cursor", "Stop on error", "Space types line breaks", "Live stats while typing", "Update on start"];
 
 enum Msg {
     Downloaded(usize, Result<String, String>),
@@ -457,7 +458,8 @@ impl App {
             3 => s.cursor.clone(),
             4 => on_off(s.stop_on_error),
             5 => on_off(s.space_for_enter),
-            _ => on_off(s.live_stats),
+            6 => on_off(s.live_stats),
+            _ => on_off(s.auto_update),
         }
     }
 
@@ -481,7 +483,8 @@ impl App {
             3 => s.cursor = cycle(&CURSORS, s.cursor.as_str(), delta).to_string(),
             4 => s.stop_on_error = !s.stop_on_error,
             5 => s.space_for_enter = !s.space_for_enter,
-            _ => s.live_stats = !s.live_stats,
+            6 => s.live_stats = !s.live_stats,
+            _ => s.auto_update = !s.auto_update,
         }
         log::info!("setting {:?} = {}", SETTING_LABELS[i.min(SETTING_LABELS.len() - 1)], self.setting_value(i));
         if let Err(e) = self.settings.save() {

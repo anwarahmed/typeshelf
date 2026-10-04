@@ -29,6 +29,15 @@ pub fn state_dir() -> PathBuf {
     base("XDG_STATE_HOME", ".local/state")
 }
 
+/// The source checkout this binary was built in, when it is being run from that
+/// checkout's `target/` directory (directly or through a symlink).
+pub fn checkout_root() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let target = exe.parent()?.parent()?;
+    let root = target.parent()?;
+    (target.file_name()? == "target" && root.join("Cargo.toml").exists()).then(|| root.to_path_buf())
+}
+
 pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -65,6 +74,8 @@ pub struct Settings {
     pub stop_on_error: bool,
     pub space_for_enter: bool,
     pub live_stats: bool,
+    /// Check GitHub for a newer version at startup and rebuild if there is one.
+    pub auto_update: bool,
     /// A local clone of classic-books-markdown, read instead of downloading.
     pub books_dir: Option<String>,
 }
@@ -79,6 +90,7 @@ impl Default for Settings {
             stop_on_error: false,
             space_for_enter: true,
             live_stats: true,
+            auto_update: true,
             books_dir: None,
         }
     }

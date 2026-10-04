@@ -8,6 +8,7 @@ mod parse;
 mod store;
 mod theme;
 mod ui;
+mod update;
 
 use std::io::stdout;
 use std::path::{Path, PathBuf};
@@ -29,10 +30,12 @@ Usage:
   typeshelf                 open the library
   typeshelf <file>          add a text or markdown file to your texts and open it
   typeshelf sync            download every book for offline use
+  typeshelf update          check for a newer version now and install it
   typeshelf --help | --version
 
 Environment:
   TYPESHELF_BOOKS           path to a local clone of classic-books-markdown
+  TYPESHELF_NO_UPDATE       set to skip the update check at startup
   TYPESHELF_LOG             where to write the log (default ~/.local/state/typeshelf/typeshelf.log)
 ";
 
@@ -50,10 +53,17 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some("-V" | "--version") => {
-            println!("typeshelf {}", env!("CARGO_PKG_VERSION"));
+            println!("typeshelf {} ({})", env!("CARGO_PKG_VERSION"), if update::COMMIT.is_empty() { "unknown commit" } else { update::COMMIT });
             return ExitCode::SUCCESS;
         }
         Some("sync") => return sync(&lib),
+        Some("update") => {
+            log::init();
+            return match update::command(&settings) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail(&e),
+            };
+        }
         // Maintainer command: regenerate the embedded catalog from a clone of the books repo.
         Some("build-catalog") => {
             let Some(repo) = args.get(1) else {
@@ -94,8 +104,9 @@ fn main() -> ExitCode {
 
     log::init();
     log::info!(
-        "start v{} on {}; TERM={:?} COLORTERM={:?}; {} books ({} own); theme {:?}, page {:?}, width {}",
+        "start v{} ({}) on {}; TERM={:?} COLORTERM={:?}; {} books ({} own); theme {:?}, page {:?}, width {}",
         env!("CARGO_PKG_VERSION"),
+        update::COMMIT,
         std::env::consts::OS,
         std::env::var("TERM").unwrap_or_default(),
         std::env::var("COLORTERM").unwrap_or_default(),
@@ -105,6 +116,8 @@ fn main() -> ExitCode {
         settings.page_length,
         settings.text_width
     );
+    update::before_start(&settings);
+
     // Installed before ratatui's hook, which restores the terminal and then calls this one.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
