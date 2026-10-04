@@ -152,6 +152,12 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   directory isn't writable (pacman-owned `/usr/bin`), platforms with no asset, or when
   the setting / env var is off. It never downgrades. `build.rs` still stamps the commit,
   but only for `--version` and the log.
+- **Actions are pinned to commit hashes** in every workflow, with the version in a
+  trailing comment, because the release build's output is what users install: a moved
+  tag on a third-party action could otherwise alter the binaries. `dtolnay/rust-toolchain`
+  normally selects Rust by branch name; pinned, the version goes in its `toolchain:`
+  input. `.github/dependabot.yml` opens a monthly grouped PR with newer pins. When
+  adding an action, pin it the same way.
 - **Packaging.** Three channels, all fed by the release:
   - *Install script* - the universal path, above.
   - *Homebrew* - a separate repo, `anwarahmed/homebrew-tap` (Homebrew requires the

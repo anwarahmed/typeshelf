@@ -1,0 +1,11 @@
+# Actions are pinned to exact commits so a moved tag can't change what the builds run.
+# Dependabot proposes the newer commit when an action publishes one.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
