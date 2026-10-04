@@ -15,102 +15,75 @@ affiliated with or endorsed by TypeLit, and shares no code or content with it.
 
 ## Install
 
-typeshelf is built from source on your machine, so it needs a Rust toolchain (1.88 or
-newer), git and a C compiler. The steps below set those up and then install typeshelf to `~/.local/bin`.
+Pick whichever suits your machine. Each installs the `typeshelf` command.
 
-### macOS
-
-1. Install Apple's command line tools (git and a C compiler). Skip this if
-   `xcode-select -p` already prints a path.
-
-   ```sh
-   xcode-select --install
-   ```
-
-2. Install Rust, then open a new terminal so `cargo` is found.
-
-   ```sh
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-
-3. Install typeshelf.
-
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/anwarahmed/typeshelf/main/install.sh | sh
-   ```
-
-4. Put `~/.local/bin` on your `PATH` (macOS doesn't by default), then open a new
-   terminal.
-
-   ```sh
-   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-   ```
-
-### Linux
-
-1. Install git, curl and a C compiler.
-
-   ```sh
-   sudo apt install build-essential git curl      # Debian, Ubuntu
-   sudo dnf install gcc git curl                  # Fedora
-   sudo pacman -S --needed base-devel git curl    # Arch
-   ```
-
-2. Install Rust, then open a new terminal so `cargo` is found. (Your distribution's
-   `rust` package works too if `rustc --version` reports 1.88 or newer; many stable
-   distributions ship something older.)
-
-   ```sh
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-
-3. Install typeshelf.
-
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/anwarahmed/typeshelf/main/install.sh | sh
-   ```
-
-4. Most distributions already have `~/.local/bin` on the `PATH`. If the installer says
-   it isn't, add it and open a new terminal.
-
-   ```sh
-   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-   ```
-
-### Then
+### Any Linux or macOS
 
 ```sh
-typeshelf
+curl -fsSL https://raw.githubusercontent.com/anwarahmed/typeshelf/main/install.sh | sh
 ```
 
-The first build takes a minute or two. To check the install: `typeshelf --version`.
+This downloads the latest release for your system into `~/.local/bin`. Nothing else
+needs to be installed first. The Linux binaries are statically linked, so the same file
+runs on any distribution, on x86-64 and ARM.
 
-### Updates
+If the script says `~/.local/bin` is not on your `PATH` (it isn't by default on macOS),
+add it and open a new terminal:
 
-typeshelf keeps itself current. Each time it starts it checks GitHub for a newer
-version and, if there is one, rebuilds and restarts — a minute or two, and only when
-something changed. Without a network connection it just starts.
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc    # macOS
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # Linux
+```
 
-- `typeshelf update` runs the same check on demand.
-- Turn the automatic check off under Settings → "Update on start", or with
-  `TYPESHELF_NO_UPDATE=1`.
+### Homebrew (macOS and Linux)
 
-### From a clone of the repo
+```sh
+brew install anwarahmed/tap/typeshelf
+```
+
+### Arch Linux (pacman package)
+
+Each release includes a `PKGBUILD`, so typeshelf can be installed as a regular pacman
+package:
+
+```sh
+mkdir typeshelf-bin && cd typeshelf-bin
+curl -fsSLO https://github.com/anwarahmed/typeshelf/releases/latest/download/PKGBUILD
+makepkg -si
+```
+
+It is not in the AUR yet (new AUR account registration is currently closed), so
+repeat these steps to update.
+
+### From source
+
+Needs Rust 1.88 or newer, git and a C compiler.
 
 ```sh
 git clone https://github.com/anwarahmed/typeshelf.git && cd typeshelf
-./install.sh              # build and copy to ~/.local/bin
-./install.sh --link       # symlink to this checkout's build instead (for development)
-./install.sh --uninstall  # remove it; settings and progress are kept
+./install.sh --source     # build and copy to ~/.local/bin
+./install.sh --link       # or: symlink to this checkout's build (for development)
 ```
 
-Set `TYPESHELF_BIN_DIR` to install somewhere other than `~/.local/bin`. A linked
-install does not update itself; use `git pull` and `cargo build --release`.
+### Updating
 
-### Uninstall
+| Installed with | How it updates |
+|----------------|----------------|
+| The install script | By itself. Each time typeshelf starts it checks for a newer release and, if there is one, downloads it and restarts — a few seconds. Offline, it just starts. |
+| Homebrew | `brew upgrade typeshelf` |
+| pacman package | Download the new `PKGBUILD` and run `makepkg -si` again |
+| `--link` or a source checkout | `git pull && cargo build --release` |
+
+`typeshelf update` checks on demand. To stop the automatic check, turn off
+Settings → "Update on start" or set `TYPESHELF_NO_UPDATE=1`. Downloads are verified
+against the release's SHA-256 checksums.
+
+### Uninstalling
 
 ```sh
-rm ~/.local/bin/typeshelf
+./install.sh --uninstall          # or: rm ~/.local/bin/typeshelf
+brew uninstall typeshelf
+sudo pacman -R typeshelf-bin
 ```
 
 Your settings, progress and cached books stay where they are; see [Files](#files) if you
@@ -122,7 +95,7 @@ want to remove those too.
 typeshelf                 open the library
 typeshelf <file>          add a text or markdown file to your texts and open it
 typeshelf sync            download every book for offline use (about 330 MB)
-typeshelf update          check for a newer version now and install it
+typeshelf update          check for a newer release now and install it
 ```
 
 Press `?` on any screen for its keys. The short version:

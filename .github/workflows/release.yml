@@ -1,0 +1,141 @@
+name: Release
+
+# A release is cut by merging a version bump: when `version` in Cargo.toml has no
+# matching `v<version>` tag yet, this builds the binaries and publishes them.
+# On pull requests it only builds, to prove every target still compiles.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - packaging/**
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          publish=false
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$GITHUB_REF" = refs/heads/main ] \
+            && [ -z "$(git ls-remote --tags origin "refs/tags/v$version")" ]; then
+            publish=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "version $version, publish: $publish" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true' || github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux binaries are statically linked (musl) so one file runs on every distro.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          cp "target/${{ matrix.target }}/release/typeshelf" "typeshelf-${{ matrix.target }}"
+          file "typeshelf-${{ matrix.target }}"
+      - name: Smoke test
+        # The Intel macOS binary is cross-built on an Apple silicon runner.
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: |
+          out=$("./typeshelf-${{ matrix.target }}" --version)
+          echo "$out"
+          echo "$out" | grep -q "typeshelf ${{ needs.plan.outputs.version }} "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: typeshelf-${{ matrix.target }}
+          path: typeshelf-${{ matrix.target }}
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum typeshelf-* | tee SHA256SUMS
+      - name: Render the AUR package
+        run: packaging/aur/render.sh "$VERSION" dist/SHA256SUMS LICENSE dist/aur
+      - name: Publish the release
+        run: |
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes \
+            dist/typeshelf-* dist/SHA256SUMS dist/aur/PKGBUILD
+      - name: Push to the AUR
+        # Optional: runs once an AUR account's SSH key is stored as AUR_SSH_PRIVATE_KEY.
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "AUR_SSH_PRIVATE_KEY is not set; skipping the AUR." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
+          git clone ssh://aur@aur.archlinux.org/typeshelf-bin.git aur-repo
+          cp dist/aur/PKGBUILD dist/aur/.SRCINFO aur-repo/
+          cd aur-repo
+          git config user.name "typeshelf release"
+          git config user.email "noreply@github.com"
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet || git commit -m "Update to $VERSION"
+          git push origin HEAD:master
+      - name: Ask the Homebrew tap to update
+        # Optional: the tap also checks on a schedule. TAP_TOKEN is a token allowed to
+        # run workflows in anwarahmed/homebrew-tap.
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "TAP_TOKEN is not set; the Homebrew tap will update on its own schedule." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          GH_TOKEN="$TAP_TOKEN" gh workflow run update.yml --repo anwarahmed/homebrew-tap

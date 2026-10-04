@@ -1,0 +1,20 @@
+pkgbase = typeshelf-bin
+	pkgdesc = Practice typing in the terminal by retyping classic books
+	pkgver = @VERSION@
+	pkgrel = 1
+	url = https://github.com/anwarahmed/typeshelf
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	provides = typeshelf
+	conflicts = typeshelf
+	options = !strip
+	options = !debug
+	source = typeshelf-@VERSION@-LICENSE::https://raw.githubusercontent.com/anwarahmed/typeshelf/v@VERSION@/LICENSE
+	sha256sums = @SHA_LICENSE@
+	source_x86_64 = typeshelf-@VERSION@-x86_64::https://github.com/anwarahmed/typeshelf/releases/download/v@VERSION@/typeshelf-x86_64-unknown-linux-musl
+	sha256sums_x86_64 = @SHA_X86_64@
+	source_aarch64 = typeshelf-@VERSION@-aarch64::https://github.com/anwarahmed/typeshelf/releases/download/v@VERSION@/typeshelf-aarch64-unknown-linux-musl
+	sha256sums_aarch64 = @SHA_AARCH64@
+
+pkgname = typeshelf-bin

@@ -53,7 +53,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some("-V" | "--version") => {
-            println!("typeshelf {} ({})", env!("CARGO_PKG_VERSION"), if update::COMMIT.is_empty() { "unknown commit" } else { update::COMMIT });
+            println!("typeshelf {} ({})", update::VERSION, if update::COMMIT.is_empty() { "unknown commit" } else { update::COMMIT });
             return ExitCode::SUCCESS;
         }
         Some("sync") => return sync(&lib),

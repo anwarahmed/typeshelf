@@ -74,7 +74,7 @@ pub struct Settings {
     pub stop_on_error: bool,
     pub space_for_enter: bool,
     pub live_stats: bool,
-    /// Check GitHub for a newer version at startup and rebuild if there is one.
+    /// Check GitHub for a newer release at startup and install it.
     pub auto_update: bool,
     /// A local clone of classic-books-markdown, read instead of downloading.
     pub books_dir: Option<String>,
