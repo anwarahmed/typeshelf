@@ -181,7 +181,12 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   It deliberately does **not** update: builds run from a checkout's `target/` (incl.
   `install.sh --link`), Homebrew installs (path contains `Cellar`), copies whose
   directory isn't writable (pacman-owned `/usr/bin`), platforms with no asset, or when
-  the setting / env var is off. It never downgrades. `build.rs` still stamps the commit,
+  the setting / env var is off. It never downgrades. These checks use the binary's real
+  path (`store::real_exe`): on macOS `current_exe` returns the symlink the app was started
+  by, so up to 0.2.2 a Homebrew copy started as `/opt/homebrew/bin/typeshelf` saw no
+  `Cellar` in its path, replaced that link with the new binary, and the next
+  `brew upgrade` failed at `brew link`. On Linux `current_exe` is already resolved, so
+  this can only be reproduced on a Mac. `build.rs` still stamps the commit,
   but only for `--version` and the log.
 - **Actions are pinned to commit hashes** in every workflow, with the version in a
   trailing comment, because the release build's output is what users install: a moved
