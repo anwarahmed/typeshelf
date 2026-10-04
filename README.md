@@ -15,8 +15,8 @@ affiliated with or endorsed by TypeLit, and shares no code or content with it.
 
 ## Install
 
-typeshelf is built from source on your machine, so it needs a Rust toolchain, git and a
-C compiler. The steps below set those up and then install typeshelf to `~/.local/bin`.
+typeshelf is built from source on your machine, so it needs a Rust toolchain (1.88 or
+newer), git and a C compiler. The steps below set those up and then install typeshelf to `~/.local/bin`.
 
 ### macOS
 
@@ -57,7 +57,8 @@ C compiler. The steps below set those up and then install typeshelf to `~/.local
    ```
 
 2. Install Rust, then open a new terminal so `cargo` is found. (Your distribution's
-   `rust` or `rustup` package works too, if it is recent.)
+   `rust` package works too if `rustc --version` reports 1.88 or newer; many stable
+   distributions ship something older.)
 
    ```sh
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
