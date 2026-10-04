@@ -1,0 +1,5 @@
+/target
+.books-cache
+logs/
+*.log
+*.log.1
