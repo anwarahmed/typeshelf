@@ -41,7 +41,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash
 brew install anwarahmed/tap/typeshelf
 ```
 
-The tap picks up a new release within a few hours of it being published.
+The tap picks up a new release within minutes of it being published.
 
 ### Arch Linux (pacman package)
 
@@ -128,6 +128,13 @@ you stopped.
 While typing: curly quotes, dashes and accented letters are typed with their plain
 keys (`é` is `e`, `—` is `-`), and characters with no key at all (Greek, `£`) are
 skipped for you. Line breaks take `enter` (or `space`, unless you turn that off).
+
+The clock stops when you do. After five seconds without a key the status line shows
+"paused", and when you start typing again your speed carries on from where it was, so
+stepping away costs nothing.
+
+typeshelf uses the mouse wheel itself, so while it runs, selecting text in the terminal
+needs `shift` held (`option` in macOS Terminal and iTerm2).
 
 ## Files
 
