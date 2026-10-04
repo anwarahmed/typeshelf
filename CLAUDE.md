@@ -152,6 +152,10 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   works in terminals without truecolor, e.g. macOS Terminal.app.
 - **Charts** (stats screen) are single-series in the accent color, with the recent
   pages table beside them as the exact-value view.
+- **Minimum Rust is 1.88** (`rust-version` in `Cargo.toml`): the code uses let-chains
+  and ratatui 0.30 needs it. An older toolchain gets Cargo's clear "requires rustc
+  1.88" message instead of a syntax error. CI's `test` jobs use latest stable, so a
+  separate `msrv` job builds and tests on exactly 1.88; raise both together.
 - **No argument-parsing or regex crates**; the CLI is three commands and the markdown
   cleanup is a small hand-written scanner in `parse::clean_inline`.
 
