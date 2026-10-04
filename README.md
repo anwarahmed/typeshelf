@@ -44,16 +44,17 @@ brew install anwarahmed/tap/typeshelf
 ### Arch Linux (pacman package)
 
 Each release includes a `PKGBUILD`, so typeshelf can be installed as a regular pacman
-package:
+package. This needs `base-devel` (`sudo pacman -S --needed base-devel`).
 
 ```sh
-mkdir typeshelf-bin && cd typeshelf-bin
+mkdir -p typeshelf-bin && cd typeshelf-bin
 curl -fsSLO https://github.com/anwarahmed/typeshelf/releases/latest/download/PKGBUILD
 makepkg -si
 ```
 
-It is not in the AUR yet (new AUR account registration is currently closed), so
-repeat these steps to update.
+It is not in the AUR yet (new AUR account registration is currently closed). A copy
+installed this way does not update itself; run the same three commands again to move
+to a newer release.
 
 ### From source
 
