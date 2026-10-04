@@ -1,0 +1,32 @@
+name: Release checklist
+
+# A pull request that raises the version in Cargo.toml is a release. This fails it until
+# its description has every line of the checklist in RELEASING.md ticked. It runs on every
+# pull request (and passes at once when the version is unchanged) so that it can be a
+# required check, and again whenever the description is edited.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  checklist:
+    # The ruleset on main requires this job by name.
+    name: release checklist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - env:
+          # Passed through the environment, never pasted into the script: it is text
+          # anyone opening a pull request controls.
+          BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          version() { grep -m1 '^version = ' | cut -d'"' -f2; }
+          printf '%s\n' "$BODY" > "$RUNNER_TEMP/body.md"
+          .github/scripts/release-checklist.sh "$(git show "$BASE_SHA:Cargo.toml" | version)" "$(version < Cargo.toml)" "$RUNNER_TEMP/body.md"

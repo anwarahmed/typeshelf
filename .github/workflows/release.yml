@@ -143,3 +143,13 @@ jobs:
             exit 0
           fi
           GH_TOKEN="$TAP_TOKEN" gh workflow run update.yml --repo anwarahmed/homebrew-tap
+          # The release is not done until Homebrew serves it: wait for the formula.
+          for _ in $(seq 40); do
+            sleep 15
+            if gh api repos/anwarahmed/homebrew-tap/contents/Formula/typeshelf.rb --jq .content | base64 -d | grep -q "version \"$VERSION\""; then
+              echo "The Homebrew formula is at $VERSION." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          echo "::error title=Homebrew formula not updated::The tap was asked to update but its formula is still not at $VERSION after 10 minutes. See https://github.com/anwarahmed/homebrew-tap/actions"
+          exit 1

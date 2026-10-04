@@ -161,8 +161,9 @@ cargo fmt
 
 Changes reach `main` through pull requests. To publish a release, bump `version` in
 `Cargo.toml` in a pull request; when it merges, the binaries are built and released
-automatically. See [CLAUDE.md](CLAUDE.md) for the architecture, the release process and
-the decisions behind them.
+automatically. [RELEASING.md](RELEASING.md) is the full procedure, including the checklist
+a release pull request has to carry. See [CLAUDE.md](CLAUDE.md) for the architecture and
+the decisions behind it.
 
 ## License
 
