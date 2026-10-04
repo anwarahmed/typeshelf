@@ -481,6 +481,7 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
     let [bar, info] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(Rect::new(col.x, status.y, col.width, 2));
     f.render_widget(Paragraph::new(Line::from(meter(s.progress(), bar.width as usize, st))), bar);
     let live = s.stats(app.now_ms());
+    let paused = Span::styled(if s.paused(app.now_ms()) { "   paused" } else { "" }, st.dim);
     let info_line = if !s.started() {
         Line::from(Span::styled("start typing…", st.dim))
     } else if app.settings.live_stats {
@@ -491,9 +492,10 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
             Span::styled(format!("{:.0}%", live.acc), st.bold),
             Span::styled(" accuracy   ", st.dim),
             Span::styled(fmt_clock(live.ms), st.bold),
+            paused,
         ])
     } else {
-        Line::from(Span::styled(fmt_clock(live.ms), st.dim))
+        Line::from(vec![Span::styled(fmt_clock(live.ms), st.dim), paused])
     };
     f.render_widget(Paragraph::new(info_line), info);
     f.render_widget(Paragraph::new(Span::styled(format!("{:.0}%", s.progress() * 100.0), st.dim)).alignment(Alignment::Right), info);

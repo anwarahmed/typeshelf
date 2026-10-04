@@ -4,8 +4,9 @@ use std::collections::HashMap;
 
 use crate::normalize::fold;
 
-/// Pauses longer than this don't count towards typing time.
-const IDLE_CAP_MS: u64 = 5000;
+/// A gap between two keys longer than this is a pause, not typing: the clock stops and
+/// the gap is counted as an average one instead (see `Session::gap_ms`).
+const PAUSE_AFTER_MS: u64 = 5000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mark {
@@ -45,6 +46,8 @@ pub struct Session {
     /// Mistake count per expected key.
     pub missed: HashMap<char, u32>,
     active_ms: u64,
+    /// Gaps between keys that make up `active_ms`.
+    gaps: u64,
     last_ms: Option<u64>,
     stop_on_error: bool,
     space_for_enter: bool,
@@ -64,6 +67,7 @@ impl Session {
             mistakes: 0,
             missed: HashMap::new(),
             active_ms: 0,
+            gaps: 0,
             last_ms: None,
             stop_on_error,
             space_for_enter,
@@ -100,9 +104,22 @@ impl Session {
 
     fn tick(&mut self, now_ms: u64) {
         if let Some(last) = self.last_ms {
-            self.active_ms += now_ms.saturating_sub(last).min(IDLE_CAP_MS);
+            self.active_ms += self.gap_ms(now_ms.saturating_sub(last));
+            self.gaps += 1;
         }
         self.last_ms = Some(now_ms);
+    }
+
+    /// What a gap between two keys adds to the typing time. A pause adds the average gap so
+    /// far, as if the key after it had come at the usual pace, which leaves the speed where
+    /// it was before the pause. (Nothing, when the pause follows the very first key.)
+    fn gap_ms(&self, gap: u64) -> u64 {
+        if gap > PAUSE_AFTER_MS { self.active_ms.checked_div(self.gaps).unwrap_or(0) } else { gap }
+    }
+
+    /// The clock has stopped because no key has come for a while; the next key restarts it.
+    pub fn paused(&self, now_ms: u64) -> bool {
+        self.last_ms.is_some_and(|last| !self.done() && now_ms.saturating_sub(last) > PAUSE_AFTER_MS)
     }
 
     pub fn type_char(&mut self, c: char, now_ms: u64) {
@@ -156,10 +173,10 @@ impl Session {
         }
     }
 
-    /// Typing time so far, including the pause since the last key (capped).
+    /// Typing time so far, including the time since the last key unless that is a pause.
     pub fn elapsed_ms(&self, now_ms: u64) -> u64 {
         match self.last_ms {
-            Some(last) if !self.done() => self.active_ms + now_ms.saturating_sub(last).min(IDLE_CAP_MS),
+            Some(last) if !self.done() => self.active_ms + self.gap_ms(now_ms.saturating_sub(last)),
             _ => self.active_ms,
         }
     }
@@ -281,10 +298,40 @@ mod tests {
     }
 
     #[test]
-    fn idle_time_is_capped() {
-        let mut s = Session::new("ab", false, true);
+    fn short_gaps_count_in_full() {
+        let mut s = Session::new("abc", false, true);
+        s.type_char('a', 0);
+        s.type_char('b', 1000);
+        s.type_char('c', 6000);
+        assert_eq!(s.stats(0).ms, 6000);
+    }
+
+    #[test]
+    fn a_pause_counts_as_an_average_gap() {
+        let mut s = Session::new("abcde", false, true);
+        s.type_char('a', 0);
+        s.type_char('b', 400);
+        s.type_char('c', 800);
+        // Still typing: the clock runs, and the speed falls, up to the limit.
+        assert_eq!((s.elapsed_ms(5800), s.paused(5800)), (5800, false));
+        // Past it the clock stops and falls back to where the next key will resume it.
+        assert_eq!((s.elapsed_ms(5801), s.paused(5801)), (1200, true));
+        assert_eq!(s.elapsed_ms(600_000), 1200);
+        s.type_char('d', 600_000);
+        assert_eq!((s.elapsed_ms(600_000), s.paused(600_000)), (1200, false));
+        // The speed is what it was before the pause: 3 keys in 1200 ms, as 2 in 800 ms.
+        assert_eq!(s.elapsed_ms(600_000) / 3, 800 / 2);
+        s.type_char('e', 600_400);
+        assert_eq!((s.stats(0).ms, s.paused(900_000)), (1600, false));
+    }
+
+    #[test]
+    fn a_pause_after_the_first_key_counts_nothing() {
+        let mut s = Session::new("abc", false, true);
         s.type_char('a', 0);
         s.type_char('b', 60_000);
-        assert_eq!(s.stats(0).ms, 5000);
+        assert_eq!(s.stats(0).ms, 0);
+        s.type_char('c', 60_500);
+        assert_eq!(s.stats(0).ms, 500);
     }
 }

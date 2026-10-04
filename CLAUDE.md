@@ -149,7 +149,11 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   after a mistake are shown in the `fixed` color. A page completes when the cursor
   reaches the end, corrected or not.
 - **Metrics.** WPM = correct characters / 5 / active minutes. Active time sums the gaps
-  between keystrokes, each capped at 5 s, so stepping away does not tank the number.
+  between keystrokes. A gap over 5 s (`engine::PAUSE_AFTER_MS`) is a pause: the clock
+  stops, the status line says "paused", and the gap counts as the session's average
+  gap instead, so the speed resumes where it was before the pause. (The user asked
+  for this; before, a pause cost a flat 5 s and the speed never recovered from it.)
+  Gaps up to 5 s count in full, so the live speed sinks for 5 s and then snaps back.
   Accuracy = correct keystrokes / all keystrokes (backspaces are free).
 - **Releases are versioned; a release is cut by merging a version bump.** The user
   chose this over "every merge to main" because the repo is public: other people get a
