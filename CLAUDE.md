@@ -163,7 +163,12 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
     `SRCINFO.in` per release. `.SRCINFO` has its own template because releases build on
     Ubuntu, which has no `makepkg`; if you change one template change the other, and
     check with `makepkg --printsrcinfo | diff - .SRCINFO` on Arch. The workflow pushes
-    to the AUR only if the `AUR_SSH_PRIVATE_KEY` secret exists.
+    to the AUR only if the `AUR_SSH_PRIVATE_KEY` secret exists. **Not published yet:**
+    on 2026-10-03 the AUR had new-account registration closed, so the user has no
+    account. Until then the `PKGBUILD` attached to each release is installed with
+    `makepkg -si` (README says so). When registration reopens: create the account, add
+    an SSH key, store the private key as that secret, and switch the README to
+    `yay -S typeshelf-bin`. The AUR repo is created by the first push.
   Considered and not done: Nix flake, crates.io, `.deb`/`.rpm`, Snap, Flatpak.
 - **Levels.** TypeLit has ranks; here `State::level` derives a level from total
   characters typed (level `n` at `500 * n * (n - 1)`). It is computed from history,

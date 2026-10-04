@@ -41,11 +41,19 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # Linux
 brew install anwarahmed/tap/typeshelf
 ```
 
-### Arch Linux (AUR)
+### Arch Linux (pacman package)
+
+Each release includes a `PKGBUILD`, so typeshelf can be installed as a regular pacman
+package:
 
 ```sh
-yay -S typeshelf-bin      # or paru, or any other AUR helper
+mkdir typeshelf-bin && cd typeshelf-bin
+curl -fsSLO https://github.com/anwarahmed/typeshelf/releases/latest/download/PKGBUILD
+makepkg -si
 ```
+
+It is not in the AUR yet (new AUR account registration is currently closed), so
+repeat these steps to update.
 
 ### From source
 
@@ -63,7 +71,7 @@ git clone https://github.com/anwarahmed/typeshelf.git && cd typeshelf
 |----------------|----------------|
 | The install script | By itself. Each time typeshelf starts it checks for a newer release and, if there is one, downloads it and restarts — a few seconds. Offline, it just starts. |
 | Homebrew | `brew upgrade typeshelf` |
-| AUR | Your AUR helper, e.g. `yay -Syu` |
+| pacman package | Download the new `PKGBUILD` and run `makepkg -si` again |
 | `--link` or a source checkout | `git pull && cargo build --release` |
 
 `typeshelf update` checks on demand. To stop the automatic check, turn off
@@ -75,7 +83,7 @@ against the release's SHA-256 checksums.
 ```sh
 ./install.sh --uninstall          # or: rm ~/.local/bin/typeshelf
 brew uninstall typeshelf
-yay -R typeshelf-bin
+sudo pacman -R typeshelf-bin
 ```
 
 Your settings, progress and cached books stay where they are; see [Files](#files) if you
