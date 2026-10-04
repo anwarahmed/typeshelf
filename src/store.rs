@@ -29,10 +29,17 @@ pub fn state_dir() -> PathBuf {
     base("XDG_STATE_HOME", ".local/state")
 }
 
+/// The file this program really is, with symlinks resolved. `current_exe` alone resolves
+/// them on Linux but on macOS returns the path the program was started by, e.g. Homebrew's
+/// `bin/typeshelf` link instead of the file in its `Cellar`.
+pub fn real_exe() -> std::io::Result<PathBuf> {
+    std::env::current_exe().and_then(fs::canonicalize)
+}
+
 /// The source checkout this binary was built in, when it is being run from that
 /// checkout's `target/` directory (directly or through a symlink).
 pub fn checkout_root() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
+    let exe = real_exe().ok()?;
     let target = exe.parent()?.parent()?;
     let root = target.parent()?;
     (target.file_name()? == "target" && root.join("Cargo.toml").exists()).then(|| root.to_path_buf())

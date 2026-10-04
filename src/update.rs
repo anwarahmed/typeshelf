@@ -14,7 +14,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::log;
-use crate::store::{Settings, checkout_root};
+use crate::store::{Settings, checkout_root, real_exe};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The commit this binary was built from, for `--version` and the log; empty if
@@ -135,9 +135,11 @@ fn upgrade(tag: &str, exe: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolved before any replacement; afterwards the running image has no path.
+/// Resolved before any replacement; afterwards the running image has no path. The real
+/// file, not a link to it: the checks in `skip_reason` are about where it is installed,
+/// and replacing a link would leave the installed file behind (and broke `brew upgrade`).
 fn current_exe() -> Result<PathBuf, String> {
-    std::env::current_exe().map_err(|e| format!("cannot tell where typeshelf is installed: {e}"))
+    real_exe().map_err(|e| format!("cannot tell where typeshelf is installed: {e}"))
 }
 
 /// Called before the app starts. Updates and restarts when a newer release exists;
