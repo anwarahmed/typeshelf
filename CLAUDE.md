@@ -88,6 +88,10 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   and download status moving) and drains all queued keys before redrawing so fast
   typing never lags. Downloads run on a thread and report over an mpsc channel
   collected in `App::tick`.
+- **Frames reach the terminal in one write.** ratatui draws into `main::FrameWriter`,
+  which sends a frame at once and skips one identical to the last. ratatui alone
+  flushes the cursor's show and move separately on every frame, which made the cursor
+  flicker on macOS. Don't write to stdout between frames except for the cursor style.
 - **Themes carry roles, not colors.** Widgets use `Styles` (`base`, `dim`, `accent`,
   `error`, `fixed`, `good`, `sel`) built from the theme. Text is never colored with
   the accent except for keys, titles of panels and marks.

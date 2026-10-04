@@ -10,11 +10,15 @@ mod theme;
 mod ui;
 mod update;
 
-use std::io::stdout;
+use std::cell::RefCell;
+use std::io::{self, Write, stdout};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::time::Duration;
 
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::crossterm::execute;
@@ -155,8 +159,56 @@ fn cursor_style(name: &str) -> SetCursorStyle {
     }
 }
 
-fn run(app: &mut App) -> std::io::Result<()> {
-    let mut terminal = ratatui::init();
+/// Collects what ratatui writes during one frame, so `commit` can send it at once.
+///
+/// ratatui re-sends "show cursor" and "move cursor" on every frame, each flushed on its own, and
+/// when it repaints the clock or the live stats it leaves the cursor there until a later write.
+/// Terminals that paint between those writes (seen on macOS) show the cursor flickering.
+/// Clones share one buffer: the backend owns one and `run` commits through the other.
+#[derive(Clone, Default)]
+struct FrameWriter(Rc<RefCell<Frames>>);
+
+#[derive(Default)]
+struct Frames {
+    frame: Vec<u8>,
+    last: Vec<u8>,
+}
+
+impl Write for FrameWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.borrow_mut().frame.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl FrameWriter {
+    /// Sends the frame in a single write, as a synchronized update where the terminal has them.
+    /// A frame identical to the one before it changes nothing on screen (cells are only resent
+    /// when they differ, and the cursor is positioned absolutely), so it is not sent at all:
+    /// an idle screen writes nothing and the cursor keeps its blink.
+    fn commit(&self, out: &mut impl Write) -> io::Result<()> {
+        let Frames { frame, last } = &mut *self.0.borrow_mut();
+        if frame != last {
+            out.write_all(b"\x1b[?2026h")?;
+            out.write_all(frame)?;
+            out.write_all(b"\x1b[?2026l")?;
+            out.flush()?;
+        }
+        std::mem::swap(frame, last);
+        frame.clear();
+        Ok(())
+    }
+}
+
+fn run(app: &mut App) -> io::Result<()> {
+    // Raw mode, alternate screen and the panic hook; drawing goes through `FrameWriter` instead.
+    drop(ratatui::init());
+    let frames = FrameWriter::default();
+    let mut terminal = Terminal::new(CrosstermBackend::new(frames.clone()))?;
     let mut cursor = String::new();
     let result = loop {
         app.tick();
@@ -164,7 +216,7 @@ fn run(app: &mut App) -> std::io::Result<()> {
             cursor = app.settings.cursor.clone();
             execute!(stdout(), cursor_style(&cursor))?;
         }
-        if let Err(e) = terminal.draw(|f| ui::draw(f, app)) {
+        if let Err(e) = terminal.draw(|f| ui::draw(f, app)).and_then(|_| frames.commit(&mut stdout().lock())) {
             break Err(e);
         }
         // The timeout keeps the clock, live stats and download status moving.
@@ -213,4 +265,27 @@ fn sync(lib: &Library) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(w: &mut FrameWriter, bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        w.write_all(bytes).unwrap();
+        w.flush().unwrap();
+        w.commit(&mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn frame_writer_sends_only_frames_that_differ() {
+        let mut w = FrameWriter::default();
+        assert_eq!(frame(&mut w, b"a"), b"\x1b[?2026ha\x1b[?2026l");
+        assert!(frame(&mut w, b"a").is_empty());
+        assert!(frame(&mut w, b"a").is_empty());
+        assert_eq!(frame(&mut w, b"b"), b"\x1b[?2026hb\x1b[?2026l");
+        assert_eq!(frame(&mut w, b"a"), b"\x1b[?2026ha\x1b[?2026l");
+    }
 }
