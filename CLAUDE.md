@@ -16,11 +16,13 @@ cargo run --release -- dump <file.md>        # print how a file parses (chapters
 
 `build-catalog` and `dump` are maintainer commands, deliberately left out of `--help`.
 
-`install.sh` (POSIX sh, macOS + Linux) builds with `cargo build --release --locked` and
-copies the binary to `~/.local/bin` (`TYPESHELF_BIN_DIR` overrides). Run from a
-checkout it builds that checkout; piped from curl it clones the repo to a temp dir.
-`--link` symlinks to the checkout's build, `--uninstall` removes it. It never installs
-Rust itself and never edits shell profiles - it only prints what to add to `PATH`.
+`install.sh` (POSIX sh, macOS + Linux) downloads the latest release binary into
+`~/.local/bin` (`TYPESHELF_BIN_DIR` overrides) and verifies its checksum. `--source`
+builds instead (the checkout it is in, else a fresh clone), and it falls back to that
+when no binary exists for the platform. `--link` symlinks to the checkout's build,
+`--uninstall` removes it. It never installs Rust and never edits shell profiles.
+`TYPESHELF_RELEASE_URL` points it at another download base (used to test it against a
+local directory with `file://`).
 
 ## Resources
 
@@ -51,7 +53,7 @@ Single binary crate, no async. One file per concern in `src/`:
 | `library.rs`   | Embedded catalog, download + disk cache, user texts, catalog builder |
 | `store.rs`     | `Settings` and `State` (progress, history, missed keys) as JSON on disk |
 | `theme.rs`     | Color themes |
-| `update.rs`    | Startup self-update: compare build commit with GitHub, rebuild via `install.sh`, re-exec |
+| `update.rs`    | Startup self-update: compare version with the latest GitHub release, download, verify, re-exec |
 | `log.rs`       | Append-only trace log and the `log::info!` / `warning!` / `error!` macros |
 
 Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `paginate` →
@@ -127,18 +129,42 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
 - **Metrics.** WPM = correct characters / 5 / active minutes. Active time sums the gaps
   between keystrokes, each capped at 5 s, so stepping away does not tank the number.
   Accuracy = correct keystrokes / all keystrokes (backspaces are free).
-- **Self-update on start** (asked for by the user: "always updates to the latest
-  version before starting"). There are no release binaries, so "latest version" means
-  the head of `main`. `build.rs` stamps the binary with its commit (`update::COMMIT`);
-  at startup `update::before_start` asks the GitHub API for main's commit (3 s timeout,
-  silent when offline) and, if it differs, clones the repo into the cache dir, runs
-  that clone's `install.sh` over the running binary's directory, and re-execs with
-  `TYPESHELF_NO_UPDATE=1` so it can't loop. A failed build keeps the current version.
+- **Releases are versioned; a release is cut by merging a version bump.** The user
+  chose this over "every merge to main" because the repo is public: other people get a
+  stable target, bug reports name a version, and nothing half-finished ships. To
+  release: bump `version` in `Cargo.toml` (and `Cargo.lock`, via any cargo command) in
+  a PR. On merge, `.github/workflows/release.yml` sees there is no `v<version>` tag,
+  builds four binaries, and publishes a GitHub release with them, `SHA256SUMS` and the
+  rendered `PKGBUILD`. Merges that don't change the version release nothing. The same
+  workflow runs build-only on PRs that touch packaging, to prove all targets compile.
+- **Release assets are bare binaries**, named `typeshelf-<rust target>`, not archives:
+  `x86_64-` and `aarch64-unknown-linux-musl` (static, so one file runs on every
+  distro), `aarch64-` and `x86_64-apple-darwin`. Bare files mean the updater and
+  `install.sh` need no tar/gzip code. Renaming assets breaks installed copies' updates,
+  the install script, the Homebrew formula and the AUR package at once.
+- **Self-update on start** (asked for by the user). `update::before_start` asks the
+  GitHub API for the latest release (3 s timeout, silent when offline); if its version
+  is higher than `CARGO_PKG_VERSION` it downloads the asset for this platform, checks
+  it against `SHA256SUMS`, renames it over the running binary and re-execs with
+  `TYPESHELF_NO_UPDATE=1` so it can't loop. Any failure keeps the current version.
   It deliberately does **not** update: builds run from a checkout's `target/` (incl.
-  `install.sh --link`), builds stamped `-dirty`, or when the setting/env var is off.
-  Consequences to keep in mind: every push to `main` is built and run on every machine
-  at next launch, so `main` must always build; and a copy installed from a checkout
-  with unpushed commits will be replaced by what is on GitHub.
+  `install.sh --link`), Homebrew installs (path contains `Cellar`), copies whose
+  directory isn't writable (pacman-owned `/usr/bin`), platforms with no asset, or when
+  the setting / env var is off. It never downgrades. `build.rs` still stamps the commit,
+  but only for `--version` and the log.
+- **Packaging.** Three channels, all fed by the release:
+  - *Install script* - the universal path, above.
+  - *Homebrew* - a separate repo, `anwarahmed/homebrew-tap` (Homebrew requires the
+    `homebrew-` name). Its own workflow regenerates `Formula/typeshelf.rb` from the
+    latest release on a schedule, and tests `brew install` on macOS and Linux. It lives
+    apart because the formula needs the release's checksums, which only exist after
+    the merge, and `main` here only accepts PRs.
+  - *AUR* - package `typeshelf-bin`. `packaging/aur/render.sh` fills `PKGBUILD.in` and
+    `SRCINFO.in` per release. `.SRCINFO` has its own template because releases build on
+    Ubuntu, which has no `makepkg`; if you change one template change the other, and
+    check with `makepkg --printsrcinfo | diff - .SRCINFO` on Arch. The workflow pushes
+    to the AUR only if the `AUR_SSH_PRIVATE_KEY` secret exists.
+  Considered and not done: Nix flake, crates.io, `.deb`/`.rpm`, Snap, Flatpak.
 - **Levels.** TypeLit has ranks; here `State::level` derives a level from total
   characters typed (level `n` at `500 * n * (n - 1)`). It is computed from history,
   never stored. `State::averages` gives per-book and per-chapter speed for the book
@@ -222,5 +248,5 @@ re-run `build-catalog` (chapter counts and lengths in the catalog come from the 
 - `books_dir` can only be set by editing the config file or via `TYPESHELF_BOOKS`.
 - TypeLit features not built: achievements, named ranks, non-English libraries
   (the book repo is English only), accounts and cross-device sync, visual effects.
-- Not built: prebuilt release binaries / Homebrew formula, accounts or
+- Not built: accounts or
   sync between machines, per-key heatmap on a keyboard layout, light/dark auto-switch.
