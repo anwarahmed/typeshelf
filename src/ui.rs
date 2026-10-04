@@ -705,7 +705,13 @@ fn draw_help(f: &mut Frame, screen: Screen, area: Rect, st: &Styles) {
     let sections: [(&str, &[(&str, &str)]); 4] = [
         (
             "Everywhere",
-            &[("1 2 3", "library, stats, settings"), ("j k  ↓ ↑", "move"), ("g G", "first, last"), ("ctrl-d ctrl-u", "half page down, up"), ("ctrl-c", "quit")],
+            &[
+                ("1 2 3", "library, stats, settings"),
+                ("j k  ↓ ↑  wheel", "move"),
+                ("g G", "first, last"),
+                ("ctrl-d ctrl-u", "half page down, up"),
+                ("ctrl-c", "quit"),
+            ],
         ),
         (
             "Library",

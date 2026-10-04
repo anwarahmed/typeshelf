@@ -92,6 +92,11 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   which sends a frame at once and skips one identical to the last. ratatui alone
   flushes the cursor's show and move separately on every frame, which made the cursor
   flicker on macOS. Don't write to stdout between frames except for the cursor style.
+- **The mouse is captured only for the wheel.** `App::on_mouse` moves the selection in
+  the library, chapter and settings lists (the lists stay stateless: the wheel moves
+  the selection, not a scroll offset) and ignores clicks and motion. Capture is turned
+  off on exit and in the panic hook, since `ratatui::restore` doesn't do it. The cost:
+  selecting text in the terminal needs shift (option in macOS Terminal) while the app runs.
 - **Themes carry roles, not colors.** Widgets use `Styles` (`base`, `dim`, `accent`,
   `error`, `fixed`, `good`, `sel`) built from the theme. Text is never colored with
   the accent except for keys, titles of panels and marks.
