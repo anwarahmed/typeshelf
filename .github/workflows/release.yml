@@ -122,11 +122,11 @@ jobs:
           ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
           git clone ssh://aur@aur.archlinux.org/typeshelf-bin.git aur-repo
-          cp dist/aur/PKGBUILD dist/aur/.SRCINFO aur-repo/
+          cp dist/aur/PKGBUILD dist/aur/.SRCINFO dist/aur/LICENSE aur-repo/
           cd aur-repo
           git config user.name "typeshelf release"
           git config user.email "noreply@github.com"
-          git add PKGBUILD .SRCINFO
+          git add PKGBUILD .SRCINFO LICENSE
           git diff --cached --quiet || git commit -m "Update to $VERSION"
           git push origin HEAD:master
       - name: Ask the Homebrew tap to update

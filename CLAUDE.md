@@ -217,7 +217,9 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   - *AUR* - package `typeshelf-bin`. `packaging/aur/render.sh` fills `PKGBUILD.in` and
     `SRCINFO.in` per release. `.SRCINFO` has its own template because releases build on
     Ubuntu, which has no `makepkg`; if you change one template change the other, and
-    check with `makepkg --printsrcinfo | diff - .SRCINFO` on Arch. The workflow pushes
+    check with `makepkg --printsrcinfo | diff - .SRCINFO` on Arch. `packaging/aur/LICENSE`
+    (0BSD) covers the package files, as the AUR guidelines ask, and is pushed with
+    them; the app itself stays MIT. The workflow pushes
     to the AUR only if the `AUR_SSH_PRIVATE_KEY` secret exists. **Not published yet:**
     on 2026-10-03 the AUR had new-account registration closed, so the user has no
     account. Until then the `PKGBUILD` attached to each release is installed with
