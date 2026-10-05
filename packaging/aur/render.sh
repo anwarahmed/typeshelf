@@ -32,3 +32,6 @@ for pair in PKGBUILD.in:PKGBUILD SRCINFO.in:.SRCINFO; do
         -e "s/@SHA_X86_64@/$x86_64/g" -e "s/@SHA_AARCH64@/$aarch64/g" \
         "$here/${pair%%:*}" > "$out/${pair##*:}"
 done
+# The AUR asks for a license covering the package files themselves (0BSD); this is
+# not the app's license, which the package installs from the release tag.
+cp "$here/LICENSE" "$out/LICENSE"
