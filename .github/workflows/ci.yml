@@ -22,6 +22,8 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo build --release
+      # The built program's updater and install.sh, against releases made up on the spot.
+      - run: tests/update.sh target/release/typeshelf
 
   # Builds with the oldest Rust the crate claims to support (`rust-version` in
   # Cargo.toml), so that claim can't silently go stale. Keep the two in step.

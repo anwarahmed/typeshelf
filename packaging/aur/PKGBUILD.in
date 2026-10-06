@@ -24,4 +24,8 @@ sha256sums_aarch64=('@SHA_AARCH64@')
 package() {
     install -Dm755 "$srcdir/typeshelf-$pkgver-$CARCH" "$pkgdir/usr/bin/typeshelf"
     install -Dm644 "$srcdir/typeshelf-$pkgver-LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    # pacman owns this copy: the marker tells typeshelf never to update itself. It looks
+    # for it at ../share/typeshelf/managed-by from the directory of its binary.
+    install -d "$pkgdir/usr/share/typeshelf"
+    echo "pacman; update the typeshelf-bin package" > "$pkgdir/usr/share/typeshelf/managed-by"
 }

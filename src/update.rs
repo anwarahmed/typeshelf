@@ -21,8 +21,18 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// unknown, `-dirty` if the tree had local changes.
 pub const COMMIT: &str = env!("TYPESHELF_COMMIT");
 
-const LATEST_URL: &str = "https://api.github.com/repos/anwarahmed/typeshelf/releases/latest";
-const DOWNLOAD_URL: &str = "https://github.com/anwarahmed/typeshelf/releases/download";
+/// Where the latest release's files are: `VERSION`, `SHA256SUMS` and one binary per
+/// platform. Plain downloads, not the GitHub API: the API allows 60 requests an hour
+/// per address without a token, which a check on every start can use up on a shared
+/// network, and the check then fails silently.
+const RELEASES: &str = "https://github.com/anwarahmed/typeshelf/releases/latest/download";
+/// Points the updater somewhere else, as it does `install.sh`; `file://` works, which
+/// is how the updater is tested.
+const URL_ENV: &str = "TYPESHELF_RELEASE_URL";
+/// A package that owns its copy installs this file, relative to the directory of the
+/// binary, naming itself and how to upgrade. Homebrew's formula and the AUR package
+/// both do; typeshelf then leaves updating to them.
+const MANAGED_BY: &str = "../share/typeshelf/managed-by";
 /// Set on the restarted process so a failed or raced update can't loop.
 const SKIP_ENV: &str = "TYPESHELF_NO_UPDATE";
 /// Starting the app must not hang on a bad connection.
@@ -58,37 +68,57 @@ fn writable(dir: &Path) -> bool {
     ok
 }
 
+/// The package that owns the copy at `exe`, as its marker file words it
+/// ("Homebrew; use brew upgrade typeshelf"), if one does.
+fn managed_by(exe: &Path) -> Option<String> {
+    let marker = fs::read_to_string(exe.parent()?.join(MANAGED_BY)).ok()?;
+    marker.lines().next().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string)
+}
+
 /// Why this copy doesn't update itself, if it doesn't.
-fn skip_reason(settings: &Settings, exe: &Path) -> Option<&'static str> {
+fn skip_reason(settings: &Settings, exe: &Path) -> Option<String> {
+    let fixed = |s: &str| Some(s.to_string());
     if std::env::var_os(SKIP_ENV).is_some_and(|v| !v.is_empty()) {
-        Some("TYPESHELF_NO_UPDATE is set")
+        fixed("TYPESHELF_NO_UPDATE is set")
     } else if !settings.auto_update {
-        Some("turned off in settings")
+        fixed("turned off in settings")
     } else if checkout_root().is_some() {
-        Some("running from a source checkout; use git pull and cargo build")
+        fixed("running from a source checkout; use git pull and cargo build")
+    } else if let Some(owner) = managed_by(exe) {
+        // The package said so itself when it installed this copy; nothing is guessed.
+        Some(format!("installed with {owner}"))
     } else if exe.components().any(|c| c.as_os_str() == "Cellar") {
-        Some("installed with Homebrew; use brew upgrade typeshelf")
+        // In case a formula ever ships without the marker. `exe` has symlinks resolved,
+        // so this sees through the link Homebrew puts in its bin directory.
+        fixed("installed with Homebrew; use brew upgrade typeshelf")
     } else if asset_name().is_none() {
-        Some("no prebuilt binary for this platform; rebuild from source to update")
+        fixed("no prebuilt binary for this platform; rebuild from source to update")
     } else if !exe.parent().is_some_and(writable) {
-        Some("its directory is not writable, so a package manager probably owns it; update it the way you installed it")
+        fixed("its directory is not writable, so a package manager probably owns it; update it the way you installed it")
     } else {
         None
     }
 }
 
+fn base() -> String {
+    std::env::var(URL_ENV).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| RELEASES.to_string())
+}
+
 fn get(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
+    if let Some(path) = url.strip_prefix("file://") {
+        return fs::read(path).map_err(|e| e.to_string());
+    }
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(timeout)).build().into();
     let mut res = agent.get(url).header("User-Agent", "typeshelf").call().map_err(|e| e.to_string())?;
     res.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(|e| e.to_string())
 }
 
-/// The newest released version and its tag.
+/// The newest released version, as numbers and as a tag. Read from the `VERSION` file
+/// each release carries (since 0.2.5).
 fn latest_release() -> Result<(Version, String), String> {
-    let body = get(LATEST_URL, CHECK_TIMEOUT)?;
-    let json: serde_json::Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-    let tag = json["tag_name"].as_str().ok_or("unexpected reply from GitHub")?;
-    Ok((parse_version(tag).ok_or_else(|| format!("unrecognized release tag {tag:?}"))?, tag.to_string()))
+    let body = get(&format!("{}/VERSION", base()), CHECK_TIMEOUT)?;
+    let text = String::from_utf8_lossy(&body).trim().trim_start_matches('v').to_string();
+    Ok((parse_version(&text).ok_or_else(|| format!("unrecognized release version {text:?}"))?, format!("v{text}")))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -103,14 +133,15 @@ fn expected_sum<'a>(sums: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Downloads the release binary for this platform, checks it against the release's
-/// checksums, and swaps it in for `exe`.
+/// Downloads the latest release's binary for this platform, checks it against the
+/// release's checksums, and swaps it in for `exe`.
 fn install(tag: &str, exe: &Path) -> Result<(), String> {
     let name = asset_name().ok_or("no prebuilt binary for this platform")?;
-    let sums = get(&format!("{DOWNLOAD_URL}/{tag}/SHA256SUMS"), DOWNLOAD_TIMEOUT).map_err(|e| format!("could not download checksums: {e}"))?;
+    let base = base();
+    let sums = get(&format!("{base}/SHA256SUMS"), DOWNLOAD_TIMEOUT).map_err(|e| format!("could not download checksums: {e}"))?;
     let sums = String::from_utf8_lossy(&sums);
     let want = expected_sum(&sums, name).ok_or_else(|| format!("release {tag} has no checksum for {name}"))?;
-    let binary = get(&format!("{DOWNLOAD_URL}/{tag}/{name}"), DOWNLOAD_TIMEOUT).map_err(|e| format!("could not download {name}: {e}"))?;
+    let binary = get(&format!("{base}/{name}"), DOWNLOAD_TIMEOUT).map_err(|e| format!("could not download {name}: {e}"))?;
     let got = sha256_hex(&binary);
     if !got.eq_ignore_ascii_case(want) {
         return Err(format!("checksum mismatch for {name} (expected {want}, got {got})"));
@@ -210,6 +241,37 @@ mod tests {
         assert_eq!(expected_sum(sums, "typeshelf-aarch64-apple-darwin"), Some("bbb"));
         assert_eq!(expected_sum(sums, "typeshelf-x86_64-unknown-linux-musl"), Some("aaa"));
         assert_eq!(expected_sum(sums, "typeshelf-x86_64"), None);
+    }
+
+    #[test]
+    fn a_marker_file_names_the_package_that_owns_a_copy() {
+        let root = std::env::temp_dir().join(format!("typeshelf-test-{}-managed", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let exe = root.join("bin/typeshelf");
+        assert_eq!(managed_by(&exe), None);
+        fs::create_dir_all(root.join("share/typeshelf")).unwrap();
+        fs::write(root.join("share/typeshelf/managed-by"), "Homebrew; use brew upgrade typeshelf\n").unwrap();
+        assert_eq!(managed_by(&exe).as_deref(), Some("Homebrew; use brew upgrade typeshelf"));
+        // The marker outranks every guess about the path.
+        let settings = Settings { auto_update: true, ..Settings::default() };
+        if std::env::var_os(SKIP_ENV).is_none() {
+            assert_eq!(skip_reason(&settings, &exe).as_deref(), Some("installed with Homebrew; use brew upgrade typeshelf"));
+        }
+        fs::write(root.join("share/typeshelf/managed-by"), "\n").unwrap();
+        assert_eq!(managed_by(&exe), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_a_release_from_a_directory() {
+        // What the end-to-end test relies on: file:// is read from disk.
+        let dir = std::env::temp_dir().join(format!("typeshelf-test-{}-get", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("VERSION"), "1.2.3\n").unwrap();
+        assert_eq!(get(&format!("file://{}/VERSION", dir.display()), CHECK_TIMEOUT).unwrap(), b"1.2.3\n");
+        assert!(get(&format!("file://{}/missing", dir.display()), CHECK_TIMEOUT).is_err());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

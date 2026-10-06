@@ -9,11 +9,11 @@ let a release skip.
 
 | Step | Enforced by |
 |------|-------------|
-| Formatting, lints, tests on Linux and macOS, minimum Rust | `ci.yml`, required to merge |
+| Formatting, lints, tests on Linux and macOS (including the updater and `install.sh`, end to end), minimum Rust | `ci.yml`, required to merge |
 | `Cargo.lock` matches `Cargo.toml`; all four binaries build | `release.yml` on the pull request (`--locked`) |
 | The version only goes up | `release-checklist.yml`, required to merge |
 | Every line of the checklist below is ticked in the pull request | `release-checklist.yml`, required to merge |
-| Binaries, `SHA256SUMS` and `PKGBUILD` are published under tag `v<version>` | `release.yml` on merge |
+| Binaries, `SHA256SUMS`, `VERSION` and `PKGBUILD` are published under tag `v<version>` | `release.yml` on merge |
 | The Homebrew formula reaches the new version | `release.yml` on merge, when the `TAP_TOKEN` secret is set; a warning on the run otherwise |
 | The AUR package is pushed | `release.yml` on merge, when `AUR_SSH_PRIVATE_KEY` is set |
 
@@ -48,7 +48,7 @@ checking where it can.
 
    ```sh
    gh run list --workflow release.yml --limit 1
-   gh release view v<version>    # four binaries, SHA256SUMS, PKGBUILD
+   gh release view v<version>    # four binaries, SHA256SUMS, VERSION, PKGBUILD
    ```
 
 2. Homebrew. With `TAP_TOKEN` set the run has already waited for the formula and fails
