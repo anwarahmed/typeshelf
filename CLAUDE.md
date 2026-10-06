@@ -198,6 +198,14 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
     (a directory with `VERSION`, `SHA256SUMS` and a binary). `update::get` reads
     `file://` from disk, which is what lets `tests/update.sh` test the updater end to
     end without a network.
+  - *At most one check a day* (asked for by the user; since 0.2.6). Checking on every
+    start put a network round trip, about 0.4 s, in front of the app each time, for
+    releases that come rarely. A check that gets an answer and finds nothing newer
+    writes the time to `last-update-check` in the state directory, and for 24 hours
+    the start skips the check. Only an answer is noted: a failed check (offline) is
+    tried again at the next start, and so is a failed install. A noted time in the
+    future (the clock was set back) does not count. `typeshelf update` always checks. To
+    see the check happen again, delete the file.
   - *Which copies never update:* builds run from a checkout's `target/` (incl.
     `install.sh --link`), copies a package owns, copies whose directory isn't writable,
     platforms with no asset, or when the setting / env var is off.
@@ -326,7 +334,9 @@ re-run `build-catalog` (chapter counts and lengths in the catalog come from the 
 `tests/update.sh` tests `install.sh` and the self-updater end to end: it copies the
 built binary outside the checkout (a checkout build never updates), makes releases in
 temporary directories (the "newer binary" is a two-line script, so it is plain which
-one runs) and points `TYPESHELF_RELEASE_URL` at them. CI runs it on Linux and macOS. To
+one runs) and points `TYPESHELF_RELEASE_URL` at them. With tmux installed it also starts
+the app, to check the once-a-day limit and the update at startup. CI runs it on Linux
+and macOS. To
 try the update at startup by hand, do the same and start the copy with throwaway
 `XDG_*` directories: it should print "Updating typeshelf ..." and restart as the new
 version.

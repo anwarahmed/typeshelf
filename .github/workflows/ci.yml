@@ -22,7 +22,14 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo build --release
-      # The built program's updater and install.sh, against releases made up on the spot.
+      - name: tmux (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux
+      # The built program's updater and install.sh, against releases made up on the spot;
+      # tmux is for starting the app itself.
       - run: tests/update.sh target/release/typeshelf
 
   # Builds with the oldest Rust the crate claims to support (`rust-version` in

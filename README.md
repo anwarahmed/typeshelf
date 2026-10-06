@@ -77,12 +77,12 @@ That builds the checkout and copies the result to `~/.local/bin`. For developmen
 
 | Installed with | How it updates |
 |----------------|----------------|
-| The install script, including `--source` | By itself. Each time typeshelf starts it checks for a newer release and, if there is one, downloads it and restarts — a few seconds. Offline, it just starts. |
+| The install script, including `--source` | By itself. When typeshelf starts it checks for a newer release, at most once a day, and, if there is one, downloads it and restarts — a few seconds. Offline, it just starts. |
 | Homebrew | `brew upgrade typeshelf` |
 | pacman package | Run the three install commands again |
 | `--link`, or running from a checkout | `git pull && cargo build --release` |
 
-For a copy that updates itself, `typeshelf update` checks on demand. To stop the
+For a copy that updates itself, `typeshelf update` checks on demand, at any time. To stop the
 automatic check, turn off Settings → "Update on start" or set `TYPESHELF_NO_UPDATE=1`.
 Updates are verified against the release's SHA-256 checksums, and never move to an
 older version. A copy that Homebrew or pacman owns is marked as theirs when it is
