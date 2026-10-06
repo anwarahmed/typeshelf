@@ -85,7 +85,8 @@ That builds the checkout and copies the result to `~/.local/bin`. For developmen
 For a copy that updates itself, `typeshelf update` checks on demand. To stop the
 automatic check, turn off Settings → "Update on start" or set `TYPESHELF_NO_UPDATE=1`.
 Updates are verified against the release's SHA-256 checksums, and never move to an
-older version.
+older version. A copy that Homebrew or pacman owns is marked as theirs when it is
+installed and never replaces itself.
 
 ### Uninstalling
 

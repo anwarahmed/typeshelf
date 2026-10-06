@@ -8,6 +8,7 @@ modeled on the web app [TypeLit.io](https://www.typelit.io/). Targets macOS and 
 ```sh
 cargo run --release                          # run (debug builds parse big books slowly)
 cargo test                                   # unit tests (normalize, parse, paginate, engine, store, update)
+cargo build --release && tests/update.sh     # install.sh and the self-updater, end to end against made-up releases
 cargo clippy --all-targets -- -D warnings    # CI fails on any warning
 cargo fmt                                    # rustfmt.toml: max_width 160
 cargo run --release -- build-catalog .books-cache   # regenerate assets/catalog.json
@@ -21,8 +22,9 @@ cargo run --release -- dump <file.md>        # print how a file parses (chapters
 builds instead (the checkout it is in, else a fresh clone), and it falls back to that
 when no binary exists for the platform. `--link` symlinks to the checkout's build,
 `--uninstall` removes it. It never installs Rust and never edits shell profiles.
-`TYPESHELF_RELEASE_URL` points it at another download base (used to test it against a
-local directory with `file://`).
+`TYPESHELF_RELEASE_URL` points it, and the self-updater, at another download base (a
+`file://` directory holding `VERSION`, `SHA256SUMS` and a binary; `tests/update.sh`
+makes such directories).
 
 ## Workflow
 
@@ -170,29 +172,47 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   stable target, bug reports name a version, and nothing half-finished ships. To
   release: bump `version` in `Cargo.toml` (and `Cargo.lock`, via any cargo command) in
   a PR. On merge, `.github/workflows/release.yml` sees there is no `v<version>` tag,
-  builds four binaries, and publishes a GitHub release with them, `SHA256SUMS` and the
-  rendered `PKGBUILD`. Merges that don't change the version release nothing. The same
+  builds four binaries, and publishes a GitHub release with them, `SHA256SUMS`,
+  `VERSION` and the rendered `PKGBUILD`. Merges that don't change the version release nothing. The same
   workflow runs build-only on PRs that touch packaging, to prove all targets compile.
 - **Release assets are bare binaries**, named `typeshelf-<rust target>`, not archives:
   `x86_64-` and `aarch64-unknown-linux-musl` (static, so one file runs on every
   distro), `aarch64-` and `x86_64-apple-darwin`. Bare files mean the updater and
   `install.sh` need no tar/gzip code. Renaming assets breaks installed copies' updates,
   the install script, the Homebrew formula and the AUR package at once.
-- **Self-update on start** (asked for by the user). `update::before_start` asks the
-  GitHub API for the latest release (3 s timeout, silent when offline); if its version
-  is higher than `CARGO_PKG_VERSION` it downloads the asset for this platform, checks
-  it against `SHA256SUMS`, renames it over the running binary and re-execs with
-  `TYPESHELF_NO_UPDATE=1` so it can't loop. Any failure keeps the current version.
-  It deliberately does **not** update: builds run from a checkout's `target/` (incl.
-  `install.sh --link`), Homebrew installs (path contains `Cellar`), copies whose
-  directory isn't writable (pacman-owned `/usr/bin`), platforms with no asset, or when
-  the setting / env var is off. It never downgrades. These checks use the binary's real
-  path (`store::real_exe`): on macOS `current_exe` returns the symlink the app was started
-  by, so up to 0.2.2 a Homebrew copy started as `/opt/homebrew/bin/typeshelf` saw no
-  `Cellar` in its path, replaced that link with the new binary, and the next
-  `brew upgrade` failed at `brew link`. On Linux `current_exe` is already resolved, so
-  this can only be reproduced on a Mac. `build.rs` still stamps the commit,
-  but only for `--version` and the log.
+- **Self-update on start** (asked for by the user). `update::before_start` downloads
+  `VERSION` from the latest release (3 s timeout, silent when offline); if it is higher
+  than `CARGO_PKG_VERSION` it downloads the asset for this platform, checks it against
+  `SHA256SUMS`, renames it over the running binary and re-execs with
+  `TYPESHELF_NO_UPDATE=1` so it can't loop. Any failure keeps the current version. It
+  never downgrades. `build.rs` still stamps the commit, but only for `--version` and
+  the log.
+  - *No GitHub API* (since 0.2.5; the idea came back from the user's wordl project).
+    Up to 0.2.4 the check asked `api.github.com` for the latest release. Without a
+    token the API allows 60 requests an hour per address, so on a shared network a
+    check on every start could be refused, and since a failed check is silent the app
+    would just stop updating. `releases/latest/download/VERSION` is a plain file with
+    no such limit, and each release publishes one. Copies up to 0.2.4 still use the
+    API, which keeps working; they move to the new way once they update.
+  - *`TYPESHELF_RELEASE_URL`* points the updater, like `install.sh`, at another base
+    (a directory with `VERSION`, `SHA256SUMS` and a binary). `update::get` reads
+    `file://` from disk, which is what lets `tests/update.sh` test the updater end to
+    end without a network.
+  - *Which copies never update:* builds run from a checkout's `target/` (incl.
+    `install.sh --link`), copies a package owns, copies whose directory isn't writable,
+    platforms with no asset, or when the setting / env var is off.
+  - *A package says it owns a copy with a marker file* (since 0.2.5, also from wordl):
+    `share/typeshelf/managed-by`, one line naming the package and how to upgrade
+    ("Homebrew; use brew upgrade typeshelf"). `update::managed_by` looks for it at
+    `../share/typeshelf/managed-by` from the binary's real directory, which fits
+    Homebrew's Cellar and `/usr` alike. The tap's formula and the AUR `PKGBUILD`
+    install it. Before, the program guessed from its path (`Cellar` in it, or not
+    writable); those guesses stay as fallbacks, but a guess is what broke in 0.2.2.
+  - *All of these checks use the binary's real path* (`store::real_exe`): on macOS
+    `current_exe` returns the symlink the app was started by, so up to 0.2.2 a Homebrew
+    copy started as `/opt/homebrew/bin/typeshelf` saw no `Cellar` in its path, replaced
+    that link with the new binary, and the next `brew upgrade` failed at `brew link`.
+    On Linux `current_exe` is already resolved, so this can only be reproduced on a Mac.
 - **Actions are pinned to commit hashes** in every workflow, with the version in a
   trailing comment, because the release build's output is what users install: a moved
   tag on a third-party action could otherwise alter the binaries. `dtolnay/rust-toolchain`
@@ -303,11 +323,13 @@ use saturating arithmetic and never panic.
 For parser changes, run `dump` over the corpus and look for leftover markup, and
 re-run `build-catalog` (chapter counts and lengths in the catalog come from the parser).
 
-To test the self-update, build a copy with a lower `version` in a scratch copy of the
-source, put the binary outside any checkout (a checkout build never updates), and run
-it with throwaway `XDG_*` directories: it should update to the latest release and
-restart. `install.sh` can be tested without a release by pointing
-`TYPESHELF_RELEASE_URL` at a `file://` directory holding a binary and `SHA256SUMS`.
+`tests/update.sh` tests `install.sh` and the self-updater end to end: it copies the
+built binary outside the checkout (a checkout build never updates), makes releases in
+temporary directories (the "newer binary" is a two-line script, so it is plain which
+one runs) and points `TYPESHELF_RELEASE_URL` at them. CI runs it on Linux and macOS. To
+try the update at startup by hand, do the same and start the copy with throwaway
+`XDG_*` directories: it should print "Updating typeshelf ..." and restart as the new
+version.
 
 ## Known gaps and ideas
 

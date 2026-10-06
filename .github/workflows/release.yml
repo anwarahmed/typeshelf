@@ -11,6 +11,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - packaging/**
+      - install.sh
       - Cargo.toml
       - Cargo.lock
       - build.rs
@@ -102,12 +103,16 @@ jobs:
           merge-multiple: true
       - name: Checksums
         run: cd dist && sha256sum typeshelf-* | tee SHA256SUMS
+      - name: Version file
+        # What the self-updater reads to learn the latest version: a plain download,
+        # with no API and so no rate limit.
+        run: echo "$VERSION" > dist/VERSION
       - name: Render the AUR package
         run: packaging/aur/render.sh "$VERSION" dist/SHA256SUMS LICENSE dist/aur
       - name: Publish the release
         run: |
           gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes \
-            dist/typeshelf-* dist/SHA256SUMS dist/aur/PKGBUILD
+            dist/typeshelf-* dist/SHA256SUMS dist/VERSION dist/aur/PKGBUILD
       - name: Push to the AUR
         # Optional: runs once an AUR account's SSH key is stored as AUR_SSH_PRIVATE_KEY.
         env:
