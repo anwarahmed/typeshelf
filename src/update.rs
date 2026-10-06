@@ -9,12 +9,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
 use crate::log;
-use crate::store::{Settings, checkout_root, real_exe};
+use crate::store::{Settings, checkout_root, real_exe, state_dir};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The commit this binary was built from, for `--version` and the log; empty if
@@ -35,6 +35,13 @@ const URL_ENV: &str = "TYPESHELF_RELEASE_URL";
 const MANAGED_BY: &str = "../share/typeshelf/managed-by";
 /// Set on the restarted process so a failed or raced update can't loop.
 const SKIP_ENV: &str = "TYPESHELF_NO_UPDATE";
+/// The check at startup looks for a release at most this often. It costs a network
+/// round trip before the app appears, and releases are rare; `typeshelf update` checks at
+/// once regardless.
+const CHECK_EVERY: u64 = 24 * 60 * 60;
+/// Holds the time of the last check that got an answer, in seconds since 1970, in the
+/// state directory.
+const STAMP: &str = "last-update-check";
 /// Starting the app must not hang on a bad connection.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -98,6 +105,29 @@ fn skip_reason(settings: &Settings, exe: &Path) -> Option<String> {
     } else {
         None
     }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Whether a check that got an answer at `last` is still fresh at `now`. A time in the
+/// future (the clock was set back) does not count: better one check too many than none
+/// for however long the clock was wrong by.
+fn fresh(last: u64, now: u64) -> bool {
+    now >= last && now - last < CHECK_EVERY
+}
+
+fn checked_recently() -> bool {
+    fs::read_to_string(state_dir().join(STAMP)).ok().and_then(|s| s.trim().parse().ok()).is_some_and(|last| fresh(last, now_secs()))
+}
+
+/// Notes that the release server answered just now. Only an answer is noted: a check
+/// that failed (offline, usually) is tried again at the next start.
+fn record_check() {
+    let dir = state_dir();
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join(STAMP), format!("{}\n", now_secs()));
 }
 
 fn base() -> String {
@@ -180,12 +210,16 @@ pub fn before_start(settings: &Settings) {
     if let Some(reason) = skip_reason(settings, &exe) {
         return log::info!("update check skipped: {reason}");
     }
+    if checked_recently() {
+        return log::info!("update check skipped: already checked in the last day");
+    }
     let (latest, tag) = match latest_release() {
         Ok(release) => release,
         // Usually just offline: not worth a word on screen.
         Err(e) => return log::info!("update check failed: {e}"),
     };
     if parse_version(VERSION).is_none_or(|current| latest <= current) {
+        record_check();
         return log::info!("update check: {VERSION} is current (latest release {tag})");
     }
     match upgrade(&tag, &exe) {
@@ -213,6 +247,7 @@ pub fn command(settings: &Settings) -> Result<(), String> {
     let (latest, tag) = latest_release().map_err(|e| format!("could not check for updates: {e}"))?;
     if parse_version(VERSION).is_none_or(|current| latest <= current) {
         println!("typeshelf {VERSION} is up to date (latest release is {tag}).");
+        record_check();
         return Ok(());
     }
     upgrade(&tag, &exe)?;
@@ -272,6 +307,17 @@ mod tests {
         assert_eq!(get(&format!("file://{}/VERSION", dir.display()), CHECK_TIMEOUT).unwrap(), b"1.2.3\n");
         assert!(get(&format!("file://{}/missing", dir.display()), CHECK_TIMEOUT).is_err());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checks_at_most_once_a_day() {
+        let day = CHECK_EVERY;
+        assert!(fresh(1000, 1000));
+        assert!(fresh(1000, 1000 + day - 1));
+        assert!(!fresh(1000, 1000 + day));
+        // Never checked, or the clock went backwards: check.
+        assert!(!fresh(0, 2 * day));
+        assert!(!fresh(5000, 1000));
     }
 
     #[test]

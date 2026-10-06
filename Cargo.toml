@@ -1,6 +1,6 @@
 [package]
 name = "typeshelf"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 # Oldest toolchain that builds this; the `msrv` CI job keeps it true.
 rust-version = "1.88"

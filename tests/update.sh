@@ -1,6 +1,7 @@
 #!/bin/sh
 # End-to-end tests of install.sh and the self-updater: the built program, against
-# releases made up here and served from file://. Needs curl.
+# releases made up here and served from file://. Needs curl; the checks of what
+# happens when the app starts also need tmux, and are skipped without it.
 #
 #   tests/update.sh [path to the typeshelf binary]     default: target/release/typeshelf
 #
@@ -15,7 +16,8 @@ case $BIN in /*) ;; *) BIN=$ROOT/$BIN ;; esac
 [ -x "$BIN" ] || { echo "update.sh: $BIN is not built (cargo build --release)" >&2; exit 1; }
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+SOCK=typeshelf-update-$$
+trap 'tmux -L "$SOCK" kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
 
 fails=0
 pass() { printf 'ok    %s\n' "$1"; }
@@ -114,6 +116,54 @@ if [ -L "$TMP/link/typeshelf" ] && [ "$("$INST" --version)" = "typeshelf 99.0.0 
     pass "update: through a link, the real file is replaced and the link survives"
 else
     fail "update: through a link, the link was replaced or the file was not"
+fi
+
+# ------------------------------------------------------ when the app starts ----
+
+if ! command -v tmux >/dev/null 2>&1; then
+    echo "skip  the check at startup (tmux is not installed)"
+else
+    STAMP=$TMP/s/typeshelf/last-update-check
+    screen() { tmux -L "$SOCK" capture-pane -p 2>/dev/null; }
+    expect() { # name text -- waits up to 5 seconds for the text to be on screen
+        i=0
+        while [ "$i" -lt 50 ]; do
+            if screen | grep -qF -- "$2"; then pass "$1"; return; fi
+            sleep 0.1
+            i=$((i + 1))
+        done
+        fail "$1: '$2' never appeared"
+        screen | sed 's/^/        | /'
+    }
+    launch() { # <release directory>
+        tmux -L "$SOCK" kill-server 2>/dev/null
+        tmux -L "$SOCK" new-session -d -x 100 -y 30 \
+            "env XDG_CONFIG_HOME='$TMP/c' XDG_DATA_HOME='$TMP/d' XDG_CACHE_HOME='$TMP/k' XDG_STATE_HOME='$TMP/s' TYPESHELF_RELEASE_URL='file://$1' '$INST'; echo \"EXIT=\$?\"; sleep 20"
+    }
+
+    # At most one check a day: a start that finds nothing newer notes the time, and the
+    # next start does not look again, even with a newer release on offer.
+    fresh_copy
+    rm -f "$STAMP"
+    launch "$TMP/rel-now"
+    expect "once a day: the app starts after a check that finds nothing" "1 Library"
+    tmux -L "$SOCK" send-keys q
+    expect "once a day: it quits cleanly" "EXIT=0"
+    if [ -s "$STAMP" ]; then pass "once a day: the check is noted"; else fail "once a day: no $STAMP"; fi
+    launch "$TMP/rel-new"
+    expect "once a day: the next start goes straight to the app" "1 Library"
+    tmux -L "$SOCK" send-keys q
+    expect "once a day: and quits cleanly" "EXIT=0"
+    has "once a day: no second check, so no update" "typeshelf $VERSION (" "$(installed "$INST" --version)"
+    has "once a day: the log says why" "already checked in the last day" "$(cat "$TMP/s/typeshelf/typeshelf.log" 2>/dev/null)"
+    has "once a day: asking explicitly still checks" "Updating typeshelf $VERSION -> 99.0.0" "$(TYPESHELF_RELEASE_URL="file://$TMP/rel-bad" installed "$INST" update)"
+
+    # A day later (the noted time is old), a start checks again and updates.
+    fresh_copy
+    echo 1000 > "$STAMP"
+    launch "$TMP/rel-new"
+    expect "update: a day later, starting the app updates it and runs the new version" "typeshelf 99.0.0 (fake)"
+    tmux -L "$SOCK" kill-server 2>/dev/null
 fi
 
 echo
