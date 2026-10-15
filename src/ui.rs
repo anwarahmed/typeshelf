@@ -2,15 +2,16 @@
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate};
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Axis, Bar, BarChart, BarGroup, Block, BorderType, Chart, Clear, Dataset, GraphType, Padding, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Confirm, SETTING_LABELS, Screen, Tab, Typing};
-use crate::engine::Mark;
+use crate::app::{App, Confirm, DictState, SETTING_LABELS, Screen, Tab, Typing};
+use crate::dict;
+use crate::engine::{Cell, Mark};
 use crate::store::{Record, cache_dir, config_dir, data_dir};
 use crate::theme::Theme;
 
@@ -107,7 +108,7 @@ fn pct(frac: f64) -> String {
 }
 
 /// First row to show so that `sel` sits mid-list.
-fn window(sel: usize, len: usize, height: usize) -> usize {
+pub fn window(sel: usize, len: usize, height: usize) -> usize {
     sel.saturating_sub(height / 2).min(len.saturating_sub(height))
 }
 
@@ -126,14 +127,47 @@ fn avg_wpm(history: &[Record], last: usize) -> Option<f32> {
     (!recent.is_empty()).then(|| recent.iter().map(|r| r.wpm).sum::<f32>() / recent.len() as f32)
 }
 
+/// Greedy word wrap to `width` columns; only a word longer than a whole line is cut.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let (mut out, mut line, mut w) = (vec![], String::new(), 0);
+    for word in text.split_whitespace() {
+        if w > 0 && w + 1 + word.width() > width {
+            out.push(std::mem::take(&mut line));
+            w = 0;
+        }
+        if w > 0 {
+            line.push(' ');
+            w += 1;
+        }
+        for c in word.chars() {
+            let cw = c.width().unwrap_or(0);
+            if w > 0 && w + cw > width {
+                out.push(std::mem::take(&mut line));
+                w = 0;
+            }
+            line.push(c);
+            w += cw;
+        }
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
 // ---- frame ----
+
+/// The top bar, the body and the footer.
+pub fn frame_layout(area: Rect) -> [Rect; 3] {
+    Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area.inner(Margin::new(1, 0)))
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
     let st = styles(&app.theme);
     let area = f.area();
     f.render_widget(Block::new().style(st.base), area);
-    let [top, body, bottom] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area.inner(ratatui::layout::Margin::new(1, 0)));
+    let [top, body, bottom] = frame_layout(area);
 
     draw_top(f, app, top, &st);
     let hints = match app.screen {
@@ -142,6 +176,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Typing => draw_typing(f, app, body, &st),
         Screen::Stats => draw_stats(f, app, body, &st),
         Screen::Settings => draw_settings(f, app, body, &st),
+        Screen::Words => draw_words(f, app, body, &st),
     };
     draw_bottom(f, app, bottom, hints, &st);
 
@@ -189,9 +224,10 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect, st: &Styles) {
         let current = match app.screen {
             Screen::Stats => 1,
             Screen::Settings => 2,
+            Screen::Words => 3,
             _ => 0,
         };
-        for (i, name) in ["Library", "Stats", "Settings"].iter().enumerate() {
+        for (i, name) in ["Library", "Stats", "Settings", "Words"].iter().enumerate() {
             let style = if i == current { st.bold } else { st.dim };
             spans.push(Span::styled(format!("{} ", i + 1), st.dim));
             spans.push(Span::styled(format!("{name}   "), style));
@@ -431,21 +467,237 @@ fn wrap_cells(t: &Typing, width: usize) -> Vec<Vec<usize>> {
     rows
 }
 
-fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'a str, &'a str)> {
-    let Some(t) = &app.typing else { return vec![] };
-    let s = &t.session;
-    let [_, text_area, _, status] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1), Constraint::Length(2)]).areas(area);
+fn cell_width(cell: &Cell) -> u16 {
+    if cell.ch == '\n' { 1 } else { cell.ch.width().unwrap_or(0) as u16 }
+}
+
+/// Where the typing screen puts things. `App` uses it too, so that a click lands on the
+/// word that is drawn there.
+pub struct TypingView {
+    /// The column of text.
+    pub col: Rect,
+    /// The page wrapped into rows of cell indices.
+    pub rows: Vec<Vec<usize>>,
+    /// The first row shown.
+    pub first: usize,
+    pub status: Rect,
+    pub glossary: Option<Rect>,
+}
+
+/// Narrower than this, the glossary is left out.
+const GLOSSARY_MIN: u16 = 28;
+
+pub fn typing_view(app: &App, body: Rect) -> Option<TypingView> {
+    let t = app.typing.as_ref()?;
+    let [_, text_area, _, status] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1), Constraint::Length(2)]).areas(body);
     let width = app.settings.text_width.min(text_area.width.saturating_sub(2)).max(10).min(text_area.width);
     if width < 2 {
-        return vec![];
+        return None;
     }
-    let col = Rect::new(text_area.x + text_area.width.saturating_sub(width) / 2, text_area.y, width, text_area.height);
+    // The glossary goes beside the text when there is room for both.
+    let room = text_area.width.saturating_sub(width + 4).min(44);
+    let glossary = (app.settings.glossary != "off" && room >= GLOSSARY_MIN).then_some(room);
+    let x = text_area.x + text_area.width.saturating_sub(width + glossary.map_or(0, |g| g + 3)) / 2;
+    let col = Rect::new(x, text_area.y, width, text_area.height);
+    let glossary = glossary.map(|g| Rect::new(x + width + 3, text_area.y, g, text_area.height));
 
     // The last column is kept free for the space or line-break mark that ends a row.
     let rows = wrap_cells(t, width as usize - 1);
-    let cursor_row = rows.iter().position(|r| r.contains(&s.pos)).unwrap_or(rows.len().saturating_sub(1));
+    // The text scrolls to keep the cursor, or the word being looked up, in view.
+    let focus = t.lookup.as_ref().and_then(|l| t.words.get(l.word)).map_or(t.session.pos, |w| w.0);
+    let focus_row = rows.iter().position(|r| r.contains(&focus)).unwrap_or(rows.len().saturating_sub(1));
     let h = col.height as usize;
-    let first = cursor_row.saturating_sub(h / 3).min(rows.len().saturating_sub(h));
+    let first = focus_row.saturating_sub(h / 3).min(rows.len().saturating_sub(h));
+    Some(TypingView { col, rows, first, status, glossary })
+}
+
+/// The row a cell is in, and its column within the row.
+pub fn cell_xy(view: &TypingView, cells: &[Cell], i: usize) -> Option<(usize, u16)> {
+    let row = view.rows.iter().position(|r| r.contains(&i))?;
+    Some((row, view.rows[row].iter().take_while(|&&c| c != i).map(|&c| cell_width(&cells[c])).sum()))
+}
+
+/// The cell drawn at a screen position.
+pub fn cell_at(view: &TypingView, cells: &[Cell], at: Position) -> Option<usize> {
+    if !view.col.contains(at) {
+        return None;
+    }
+    let row = view.rows.get(view.first + (at.y - view.col.y) as usize)?;
+    let mut x = view.col.x;
+    for &i in row {
+        let w = cell_width(&cells[i]);
+        if at.x >= x && at.x < x + w.max(1) {
+            return Some(i);
+        }
+        x += w;
+    }
+    None
+}
+
+/// Where the open definition goes: under the word, or above it when there is more room there.
+pub fn definition_rect(app: &App, view: &TypingView, body: Rect) -> Option<Rect> {
+    let t = app.typing.as_ref()?;
+    let l = t.lookup.as_ref().filter(|l| l.open)?;
+    let (row, x) = cell_xy(view, &t.session.cells, t.words.get(l.word)?.0)?;
+    let y = view.col.y + row.saturating_sub(view.first).min(view.col.height.saturating_sub(1) as usize) as u16;
+    let w = 64.min(body.width);
+    let want = 18.min(body.height);
+    let (below, above) = (body.bottom().saturating_sub(y + 1), y.saturating_sub(body.y));
+    let (top, h) = if below >= want || below >= above { (y + 1, want.min(below)) } else { (y - want.min(above), want.min(above)) };
+    let left = (view.col.x + x).min(body.right().saturating_sub(w)).max(body.x);
+    (h >= 3 && w >= 8).then(|| Rect::new(left, top, w, h))
+}
+
+/// The entries of the glossary's page list each take two rows: the word and its first sense.
+fn glossary_first(app: &App, rows: u16) -> usize {
+    let Some(t) = &app.typing else { return 0 };
+    let sel = t.lookup.as_ref().and_then(|l| t.uncommon.iter().position(|&u| dict::key(&t.word(u)) == dict::key(&t.word(l.word))));
+    window(sel.unwrap_or(0), t.uncommon.len(), (rows / 2) as usize)
+}
+
+/// The page-list entry of the glossary at a screen position, as an index into `Typing::words`.
+pub fn glossary_hit(app: &App, view: &TypingView, at: Position) -> Option<usize> {
+    let t = app.typing.as_ref()?;
+    let inner = view.glossary?.inner(Margin::new(2, 1));
+    if app.settings.glossary != "page" || !inner.contains(at) {
+        return None;
+    }
+    t.uncommon.get(glossary_first(app, inner.height) + ((at.y - inner.y) / 2) as usize).copied()
+}
+
+/// How far the definition on screen can scroll, so the keys and the wheel stop at its end.
+pub fn max_scroll(app: &App) -> usize {
+    let st = styles(&app.theme);
+    let body = frame_layout(app.size)[1];
+    let (word, r) = match app.screen {
+        Screen::Typing => {
+            let Some(view) = typing_view(app, body) else { return 0 };
+            let (Some(t), Some(r)) = (&app.typing, definition_rect(app, &view, body)) else { return 0 };
+            (t.word(t.lookup.as_ref().map_or(0, |l| l.word)), r)
+        }
+        Screen::Words => match app.word_items().get(app.words_sel) {
+            Some(w) => (w.clone(), words_layout(body)[2]),
+            None => return 0,
+        },
+        _ => return 0,
+    };
+    definition_lines(app, &word, r.width.saturating_sub(4) as usize, false, &st).len().saturating_sub(r.height.saturating_sub(2) as usize)
+}
+
+/// What the dictionary says about `word`, wrapped to `width`. `brief` leaves out the
+/// examples and other words, and keeps three senses of each part of speech.
+fn definition_lines(app: &App, word: &str, width: usize, brief: bool, st: &Styles) -> Vec<Line<'static>> {
+    let note = |s: String| wrap_words(&s, width).into_iter().map(|l| Line::from(Span::styled(l, st.dim))).collect();
+    let d = match &app.dict {
+        DictState::Ready(d) => d,
+        DictState::Downloading => return note(format!("Downloading the dictionary ({}, only this once)…", dict::DOWNLOAD_SIZE)),
+        DictState::Failed(e) => return note(format!("The dictionary could not be loaded: {e}. It is tried again at the next look-up.")),
+        DictState::Unloaded => return note("Loading the dictionary…".into()),
+    };
+    let entries = d.define(word);
+    if entries.is_empty() {
+        return note(format!("\"{word}\" is not in the dictionary, which has nouns, verbs, adjectives and adverbs but not words like \"the\" or \"upon\"."));
+    }
+    let mut out = vec![];
+    let body = width.saturating_sub(4);
+    for (n, e) in entries.iter().enumerate() {
+        if n > 0 {
+            out.push(Line::raw(""));
+        }
+        // The dictionary form, when it isn't simply the word itself.
+        if entries.len() > 1 || e.lemma.replace(' ', "_") != dict::key(word) {
+            out.push(Line::from(Span::styled(e.lemma.clone(), st.bold)));
+        }
+        let (mut pos, mut num) = (None, 0);
+        for s in &e.senses {
+            if pos != Some(s.pos) {
+                out.push(Line::from(Span::styled(s.pos.label(), st.dim.add_modifier(Modifier::ITALIC))));
+                (pos, num) = (Some(s.pos), 0);
+            }
+            num += 1;
+            if brief && num > 3 {
+                continue;
+            }
+            for (i, l) in wrap_words(&s.def, body).into_iter().enumerate() {
+                out.push(Line::from(vec![Span::styled(if i == 0 { format!("{num:>2}. ") } else { "    ".into() }, st.dim), Span::styled(l, st.base)]));
+            }
+            if brief {
+                continue;
+            }
+            for ex in s.examples.iter().take(2) {
+                out.extend(wrap_words(&format!("\"{ex}\""), body).into_iter().map(|l| Line::from(Span::styled(format!("    {l}"), st.dim))));
+            }
+            if !s.also.is_empty() {
+                out.extend(wrap_words(&format!("also: {}", s.also.join(", ")), body).into_iter().map(|l| Line::from(Span::styled(format!("    {l}"), st.dim))));
+            }
+        }
+    }
+    out
+}
+
+/// A definition in a panel, scrolled, with the dictionary credited on the bottom border.
+fn draw_definition(f: &mut Frame, app: &App, word: &str, scroll: usize, hints: &[(&str, &str)], r: Rect, st: &Styles) {
+    let lines = definition_lines(app, word, r.width.saturating_sub(4) as usize, false, st);
+    let h = r.height.saturating_sub(2) as usize;
+    let scroll = scroll.min(lines.len().saturating_sub(h));
+    let mut keys = vec![Span::raw(" ")];
+    for (k, what) in hints {
+        keys.push(Span::styled(k.to_string(), st.accent));
+        keys.push(Span::styled(format!(" {what}  "), st.dim));
+    }
+    if lines.len() > scroll + h {
+        keys.push(Span::styled("↓ more ", st.dim));
+    }
+    let title = format!(" {word} ");
+    let mut block = panel(&title, st).title_bottom(Line::from(keys));
+    if r.width >= 56 {
+        block = block.title_bottom(Line::from(Span::styled(" Open English WordNet ", st.dim)).right_aligned());
+    }
+    f.render_widget(Clear, r);
+    f.render_widget(Paragraph::new(lines[scroll..].to_vec()).block(block), r);
+}
+
+fn draw_glossary(f: &mut Frame, app: &App, t: &Typing, r: Rect, st: &Styles) {
+    let inner = r.inner(Margin::new(2, 1));
+    let width = inner.width as usize;
+    let lines = if app.settings.glossary == "word" {
+        let at = t.session.pos;
+        let word = t.lookup.as_ref().map(|l| l.word).or_else(|| t.words.iter().position(|w| w.1 > at)).map(|w| t.word(w)).unwrap_or_default();
+        if word.is_empty() { vec![] } else { definition_lines(app, &word, width, true, st) }
+    } else if app.dictionary().is_none() {
+        definition_lines(app, "", width, true, st)
+    } else if t.uncommon.is_empty() {
+        vec![Line::from(Span::styled("No uncommon words on this page.", st.dim))]
+    } else {
+        let sel = t.lookup.as_ref().map(|l| dict::key(&t.word(l.word)));
+        let d = app.dictionary();
+        t.uncommon
+            .iter()
+            .skip(glossary_first(app, inner.height))
+            .take((inner.height / 2) as usize)
+            .flat_map(|&u| {
+                let word = t.word(u);
+                let style = if sel.as_deref() == Some(dict::key(&word).as_str()) { st.sel.add_modifier(Modifier::BOLD) } else { st.bold };
+                let def = d.and_then(|d| d.define(&word).into_iter().next()).and_then(|e| e.senses.into_iter().next()).map(|s| s.def).unwrap_or_default();
+                [
+                    Line::from(Span::styled(truncate(&word.to_lowercase(), width), style)),
+                    Line::from(Span::styled(format!("  {}", truncate(&def, width.saturating_sub(2))), st.dim)),
+                ]
+            })
+            .collect()
+    };
+    let title = if app.settings.glossary == "word" { " glossary " } else { " uncommon words " };
+    f.render_widget(Paragraph::new(lines).block(panel(title, st).padding(Padding::new(1, 1, 0, 0))), r);
+}
+
+fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'a str, &'a str)> {
+    let Some(t) = &app.typing else { return vec![] };
+    let s = &t.session;
+    let Some(view) = typing_view(app, area) else { return vec![] };
+    let TypingView { col, rows, first, status, glossary } = &view;
+    let (col, first, status) = (*col, *first, *status);
+    let h = col.height as usize;
+    let picked = t.lookup.as_ref().and_then(|l| t.words.get(l.word)).copied();
 
     for (y, row) in rows.iter().enumerate().skip(first).take(h) {
         let mut spans = Vec::with_capacity(row.len());
@@ -469,7 +721,8 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
                 Mark::Correct if s.had_error[i] => (cell.ch, st.fixed),
                 Mark::Correct | Mark::Skipped => (cell.ch, st.base),
             };
-            if i == s.pos && t.result.is_none() {
+            let style = if picked.is_some_and(|(a, b)| a <= i && i < b) { st.sel.add_modifier(Modifier::BOLD) } else { style };
+            if i == s.pos && t.result.is_none() && t.lookup.is_none() {
                 f.set_cursor_position(Position::new(col.x + x, col.y + (y - first) as u16));
             }
             x += if newline { 1 } else { cell.ch.width().unwrap_or(0) as u16 };
@@ -481,7 +734,16 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
     let [bar, info] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(Rect::new(col.x, status.y, col.width, 2));
     f.render_widget(Paragraph::new(Line::from(meter(s.progress(), bar.width as usize, st))), bar);
     let live = s.stats(app.now_ms());
-    let paused = Span::styled(if s.paused(app.now_ms()) { "   paused" } else { "" }, st.dim);
+    let paused = Span::styled(
+        if t.lookup.is_some() && t.result.is_none() {
+            "   clock stopped while you look up words"
+        } else if s.paused(app.now_ms()) {
+            "   paused"
+        } else {
+            ""
+        },
+        st.dim,
+    );
     let info_line = if !s.started() {
         Line::from(Span::styled("start typing…", st.dim))
     } else if app.settings.live_stats {
@@ -500,6 +762,16 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
     f.render_widget(Paragraph::new(info_line), info);
     f.render_widget(Paragraph::new(Span::styled(format!("{:.0}%", s.progress() * 100.0), st.dim)).alignment(Alignment::Right), info);
 
+    if let Some(g) = glossary {
+        draw_glossary(f, app, t, *g, st);
+    }
+    if let Some(l) = &t.lookup {
+        if let Some(r) = definition_rect(app, &view, area) {
+            draw_definition(f, app, &t.word(l.word), l.scroll, &[("s", "save"), ("esc", "close")], r, st);
+            return vec![("←→", "next word"), ("j/k", "scroll"), ("s", "save word"), ("esc", "close")];
+        }
+        return vec![("←→ ↑↓", "pick a word"), ("[ ]", "uncommon words"), ("↵", "define"), ("tab", "back to typing")];
+    }
     if let Some(r) = &t.result {
         let avg = avg_wpm(&app.state.history[..app.state.history.len().saturating_sub(1)], 20);
         let compare = match avg {
@@ -527,6 +799,8 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
                 Span::styled(" next page   ", st.dim),
                 Span::styled("r", st.accent),
                 Span::styled(" retry   ", st.dim),
+                Span::styled("l", st.accent),
+                Span::styled(" look up   ", st.dim),
                 Span::styled("esc", st.accent),
                 Span::styled(" chapters", st.dim),
             ]),
@@ -536,7 +810,87 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
         f.render_widget(Paragraph::new(lines).alignment(Alignment::Center).block(panel(" page complete ", st)), r);
         return vec![];
     }
-    vec![("esc", "chapters"), ("^r", "restart page"), ("^n/^p", "next/prev page"), ("^w", "delete word")]
+    vec![("esc", "chapters"), ("tab", "look up words"), ("^r", "restart page"), ("^n/^p", "next/prev page"), ("^w", "delete word")]
+}
+
+// ---- words ----
+
+/// The search line, the list of words, and the definition of the selected one.
+pub fn words_layout(body: Rect) -> [Rect; 3] {
+    let [search, _, rest] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(body.inner(Margin::new(1, 1)));
+    if rest.width >= 72 {
+        let [list, _, def] = Layout::horizontal([Constraint::Length(30), Constraint::Length(2), Constraint::Min(0)]).areas(rest);
+        [search, list, def]
+    } else {
+        let [list, def] = Layout::vertical([Constraint::Percentage(40), Constraint::Min(0)]).areas(rest);
+        [search, list, def]
+    }
+}
+
+fn draw_words<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'a str, &'a str)> {
+    let [search, list, def] = words_layout(area);
+    let items = app.word_items();
+    let q = app.words_query.as_str();
+    let line = if app.words_searching {
+        Line::from(vec![Span::styled("/ ", st.accent), Span::styled(q, st.base)])
+    } else if q.is_empty() {
+        Line::from(Span::styled("/ look up any word", st.dim))
+    } else {
+        Line::from(vec![Span::styled("/ ", st.dim), Span::styled(q, st.base), Span::styled("   esc clears", st.dim)])
+    };
+    f.render_widget(Paragraph::new(line), search);
+    if app.words_searching {
+        f.set_cursor_position(Position::new(search.x + 2 + q.width() as u16, search.y));
+    }
+    let n = items.len();
+    let count =
+        if q.is_empty() { format!("{n} saved {}", if n == 1 { "word" } else { "words" }) } else { format!("{n} {}", if n == 1 { "match" } else { "matches" }) };
+    f.render_widget(Paragraph::new(Span::styled(count, st.dim)).alignment(Alignment::Right), search);
+
+    if items.is_empty() {
+        let msg = if !q.is_empty() && app.dictionary().is_some() {
+            format!("No dictionary words start with \"{q}\".")
+        } else if !q.is_empty() {
+            String::new()
+        } else {
+            "No saved words yet. While typing, press tab to pick a word, enter to define it, and s to save it. Or press / to look up any word.".into()
+        };
+        f.render_widget(Paragraph::new(Span::styled(msg, st.dim)).wrap(Wrap { trim: true }), list);
+    }
+    let h = list.height as usize;
+    let first = window(app.words_sel, n, h);
+    let saved: Vec<_> = app.state.words.iter().rev().collect();
+    for (row, word) in items.iter().enumerate().skip(first).take(h) {
+        let selected = row == app.words_sel;
+        let (text, muted) = if selected { (st.sel.add_modifier(Modifier::BOLD), st.sel) } else { (st.base, st.dim) };
+        let w = list.width as usize;
+        let mut spans = vec![Span::styled(format!(" {}", pad(word, w.saturating_sub(1).min(18))), text)];
+        if q.is_empty()
+            && let Some(sw) = saved.get(row)
+        {
+            spans.push(Span::styled(pad(&format!(" {}", sw.title), w.saturating_sub(19)), muted));
+        } else {
+            spans.push(Span::styled(" ".repeat(w.saturating_sub(19)), muted));
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), Rect::new(list.x, list.y + (row - first) as u16, list.width, 1));
+    }
+    match items.get(app.words_sel) {
+        Some(word) => draw_definition(f, app, word, app.words_scroll, &[("J/K", "scroll")], def, st),
+        None => {
+            let lines = if q.is_empty() { vec![] } else { definition_lines(app, q, def.width.saturating_sub(4) as usize, false, st) };
+            f.render_widget(
+                Paragraph::new(lines).block(panel("", st).title_bottom(Line::from(Span::styled(format!(" {} ", dict::CREDIT), st.dim)).right_aligned())),
+                def,
+            );
+        }
+    }
+    if app.words_searching {
+        vec![("enter", "keep"), ("esc", "clear"), ("↑↓", "move")]
+    } else if !q.is_empty() {
+        vec![("j/k", "move"), ("s", "save word"), ("J/K", "scroll"), ("/", "search"), ("esc", "clear"), ("?", "help")]
+    } else {
+        vec![("j/k", "move"), ("/", "look up a word"), ("J/K", "scroll"), ("d", "remove"), ("1", "library"), ("?", "help"), ("q", "back")]
+    }
 }
 
 // ---- stats ----
@@ -680,6 +1034,7 @@ fn draw_settings<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(
         "When on, the cursor waits until you type the right key.",
         "When on, Space is accepted at the end of a line as well as Enter.",
         "Show speed and accuracy while typing, not only afterwards.",
+        "A panel beside the text: the definition of the word at the cursor, or the page's uncommon words. Needs a wide terminal; the dictionary (10 MB) downloads the first time.",
         "Check GitHub for a newer release each time typeshelf starts, and install it.",
     ];
     lines.push(Line::from(Span::styled(help[app.settings_sel], st.dim)));
@@ -690,6 +1045,7 @@ fn draw_settings<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(
         ("settings", config_dir().join("config.json").display().to_string()),
         ("history", data_dir().join("state.json").display().to_string()),
         ("book cache", cache_dir().join("books").display().to_string()),
+        ("dictionary", dict::dir().display().to_string()),
         ("books dir", books),
     ] {
         lines.push(Line::from(vec![Span::styled(format!(" {k:<12}"), st.dim), Span::styled(v, st.dim)]));
@@ -702,11 +1058,11 @@ fn draw_settings<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(
 
 /// Keys for the current screen only, so the panel fits a 24-row terminal.
 fn draw_help(f: &mut Frame, screen: Screen, area: Rect, st: &Styles) {
-    let sections: [(&str, &[(&str, &str)]); 4] = [
+    let sections: [(&str, &[(&str, &str)]); 5] = [
         (
             "Everywhere",
             &[
-                ("1 2 3", "library, stats, settings"),
+                ("1 2 3 4", "library, stats, settings, words"),
                 ("j k  ↓ ↑  wheel", "move"),
                 ("g G", "first, last"),
                 ("ctrl-d ctrl-u", "half page down, up"),
@@ -731,16 +1087,18 @@ fn draw_help(f: &mut Frame, screen: Screen, area: Rect, st: &Styles) {
                 ("enter", "line break (space works too)"),
                 ("backspace", "fix a mistake"),
                 ("ctrl-w  alt-backspace", "delete word"),
-                ("ctrl-r", "restart page"),
-                ("ctrl-n ctrl-p", "next, previous page"),
+                ("ctrl-r  ctrl-n  ctrl-p", "restart, next, previous page"),
+                ("tab  ctrl-d  click", "pick a word to look up, define one"),
                 ("esc", "back to chapters"),
             ],
         ),
+        ("Words", &[("/", "look up any word"), ("s", "save the word to your list"), ("d", "remove a saved word"), ("J K  wheel", "scroll the definition")]),
     ];
     let mut lines = vec![];
     let current = match screen {
         Screen::Library => "Library",
         Screen::Book => "Book",
+        Screen::Words => "Words",
         _ => "",
     };
     for (name, keys) in sections.into_iter().filter(|s| ["Everywhere", "Typing", current].contains(&s.0)) {

@@ -7,15 +7,19 @@ modeled on the web app [TypeLit.io](https://www.typelit.io/). Targets macOS and 
 
 ```sh
 cargo run --release                          # run (debug builds parse big books slowly)
-cargo test                                   # unit tests (normalize, parse, paginate, engine, store, update)
+cargo test                                   # unit tests (normalize, parse, paginate, engine, store, update, dict)
 cargo build --release && tests/update.sh     # install.sh and the self-updater, end to end against made-up releases
 cargo clippy --all-targets -- -D warnings    # CI fails on any warning
 cargo fmt                                    # rustfmt.toml: max_width 160
 cargo run --release -- build-catalog .books-cache   # regenerate assets/catalog.json
 cargo run --release -- dump <file.md>        # print how a file parses (chapters, groups, text)
+cargo run --release -- define <word>...      # print the dictionary's entries for words, and whether the glossary lists them
+assets/build-common-words.sh <scowl dir> > assets/common-words.txt   # regenerate the glossary's common words
 ```
 
-`build-catalog` and `dump` are maintainer commands, deliberately left out of `--help`.
+`build-catalog`, `dump` and `define` are maintainer commands, deliberately left out of
+`--help`. `define` reads the dictionary from the cache, so run `typeshelf sync` (or look
+a word up in the app) first.
 
 `install.sh` (POSIX sh, macOS + Linux) downloads the latest release binary into
 `~/.local/bin` (`TYPESHELF_BIN_DIR` overrides) and verifies its checksum. `--source`
@@ -75,6 +79,7 @@ Single binary crate, no async. One file per concern in `src/`:
 | `parse.rs`     | Markdown → `Book { chapters: [Chapter { title, group, lines }] }` |
 | `paginate.rs`  | Chapter lines → `Page`s of about N characters |
 | `normalize.rs` | `normalize_text` (rewrite typography) and `fold` (char → key) |
+| `dict.rs`      | The dictionary (Open English WordNet): download + unzip, lookups, inflections, common words, page words |
 | `library.rs`   | Embedded catalog, download + disk cache, user texts, catalog builder |
 | `store.rs`     | `Settings` and `State` (progress, history, missed keys) as JSON on disk |
 | `theme.rs`     | Color themes |
@@ -99,14 +104,26 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   which sends a frame at once and skips one identical to the last. ratatui alone
   flushes the cursor's show and move separately on every frame, which made the cursor
   flicker on macOS. Don't write to stdout between frames except for the cursor style.
-- **The mouse is captured only for the wheel.** `App::on_mouse` moves the selection in
-  the library, chapter and settings lists (the lists stay stateless: the wheel moves
-  the selection, not a scroll offset) and ignores clicks and motion. Capture is turned
-  off on exit and in the panic hook, since `ratatui::restore` doesn't do it. The cost:
-  selecting text in the terminal needs shift (option in macOS Terminal) while the app runs.
+- **The mouse is captured for the wheel and for picking words.** `App::on_mouse` moves
+  the selection in the lists (the lists stay stateless: the wheel moves the selection,
+  not a scroll offset), scrolls definitions, and handles a left click on the typing
+  screen (a word in the text or the glossary) and the Words screen; it ignores other
+  clicks and motion. Capture is turned off on exit and in the panic hook, since
+  `ratatui::restore` doesn't do it. The cost: selecting text in the terminal needs shift
+  (option in macOS Terminal) while the app runs.
+- **Clicks hit what is drawn because layout is shared.** `ui` exposes pure layout
+  functions (`frame_layout`, `typing_view`, `definition_rect`, `words_layout`,
+  `glossary_hit`, `max_scroll`) that both drawing and `App` call; `main` keeps
+  `App::size` at the terminal's size so `App` can run them. Don't compute a position in
+  `draw_*` that a click needs without going through one of these.
 - **Themes carry roles, not colors.** Widgets use `Styles` (`base`, `dim`, `accent`,
   `error`, `fixed`, `good`, `sel`) built from the theme. Text is never colored with
   the accent except for keys, titles of panels and marks.
+- **The dictionary is read in place.** `dict.rs` keeps WordNet's own database files
+  (`index.*`, `data.*`, `*.exc`) in memory and binary-searches the sorted index files;
+  a data line is found by the byte offset the index gives. Nothing is converted, and
+  loading takes about 12 ms in a release build, so it is loaded synchronously on first
+  use (`App::want_dict`) rather than at startup.
 - **Tests live beside the code** in `#[cfg(test)] mod tests`. Parser changes should be
   checked against the whole corpus too (see "Verifying changes").
 
@@ -255,6 +272,41 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
     an SSH key, store the private key as that secret, and switch the README to
     `yay -S typeshelf-bin`. The AUR repo is created by the first push.
   Considered and not done: Nix flake, crates.io, `.deb`/`.rpm`, Snap, Flatpak.
+- **Dictionary** (since 0.3.0; asked for by the user, with all four ways of using it: define at the
+  cursor, a look-up mode for picking a word, a glossary panel, and a saved word list).
+  - *Source: Open English WordNet 2025* (CC BY 4.0), the maintained successor of
+    Princeton WordNet (last released 2011), in the same file format. Considered and not
+    used: GCIDE / Webster's 1913 (better for old senses, but GPL, or messy public-domain
+    text), Wiktionary via kaikki.org (best coverage, but multiple GB and CC BY-SA). The
+    edition without proper nouns is used; names are not looked up.
+  - *Downloaded on first use, not embedded*, like the books: the pinned release zip from
+    GitHub (URL and SHA-256 in `dict.rs`), checked, unzipped by a small reader in
+    `dict::unzip` with `flate2` (already in the tree through `ureq`), into
+    `~/.cache/typeshelf/dictionary/oewn2025/` (25 MB; `index.sense` is skipped). A new
+    edition means changing `URL`, `SHA256` and `EDITION` together. `typeshelf sync`
+    fetches it too.
+  - *Inflections* follow WordNet's own "morphy": the word as written, then the bases in
+    the exception lists ("went" → "go"), then suffix rules; one-letter stems are dropped
+    ("is" is not "i"). Book spellings get a few extra tries: possessive removed, hyphen
+    as space or nothing ("to-morrow" → "tomorrow").
+  - *Look-up mode* stops the typing clock (`Session::suspend` / `resume` shift the last
+    key's time by the gap, so reading neither lowers the speed nor shows as a pause).
+    `Lookup::direct` marks a look-up started with `ctrl-d` or a click: closing its
+    definition returns straight to typing, while one started with `tab` returns to
+    picking words. `tab` isn't typed text: the parser turns tabs into spaces.
+  - *Uncommon words* (the glossary's page list and `]` / `[`): in the dictionary, longer
+    than two letters, and neither the word nor any of its dictionary forms is in
+    `assets/common-words.txt`. That list is SCOWL's size levels 10 and 20 (~12.7k forms),
+    permissively licensed, notice kept in the file. The first try was ranking words by
+    how many books in the corpus use them; it marked "countenance", "presently" and
+    "melancholy" as common, exactly the words a modern reader wants explained, so a
+    modern list replaced it. A word capitalized every time on the page and at least once
+    mid-sentence ("said Mr. Bennet") is taken for a name and left out (`dict::names`),
+    since WordNet knows some names as words (a bennet is a plant).
+  - *Saved words* are `State::words` (dictionary form, book, title, time), oldest first,
+    and are shown newest first. A word saved from the Words screen's search has no book.
+  - The glossary only appears when the terminal has room for it beside the text
+    (`ui::GLOSSARY_MIN`); the setting stays on and it comes back when widened.
 - **Levels.** TypeLit has ranks; here `State::level` derives a level from total
   characters typed (level `n` at `500 * n * (n - 1)`). It is computed from history,
   never stored. `State::averages` gives per-book and per-chapter speed for the book
@@ -284,7 +336,8 @@ When something misbehaves, read the log first. A build run from `target/` writes
 
 It records: startup (version, commit, OS, TERM, settings), the update check and its
 outcome (including why it was skipped), every book open (chapters, parse
-time, saved progress), downloads, each typing session start (chapter, page, saved
+time, saved progress), downloads (books and the dictionary, and the dictionary's load
+time), look-up mode being entered and words saved or removed (counts, never the words), each typing session start (chapter, page, saved
 cursor, resume cell), pages left part-way and completed, setting changes, every footer
 message shown to the user (`toast:` lines, which is where errors surface), and panics
 with a backtrace. It never records typed keys or book text. When adding a feature
@@ -297,6 +350,12 @@ resuming failed was found by comparing that file with what the code assumed.
 
 - Code: MIT (`LICENSE`, `license` in `Cargo.toml`), copyright Anwar Ahmed. All
   dependencies are permissive (MIT / Apache-2.0 / ISC / Zlib / BSD / Unicode).
+- Dictionary: Open English WordNet, CC BY 4.0. It is downloaded at run time, not stored
+  in the repo; the attribution is in the README and on every definition panel's border
+  ("Open English WordNet"). Keep that credit if the panels change.
+- `assets/common-words.txt` is derived from SCOWL; its license asks that the copyright
+  and permission notice stay with every copy, which is why they head the file
+  (`dict.rs` skips the `#` lines). Regenerate it only with `assets/build-common-words.sh`.
 - Books are not redistributed: only `assets/catalog.json` (titles, authors, years,
   sizes) is in the repo; texts are fetched from the upstream repo at run time. That
   repo has no license file and asserts "all titles from the public domain"; some titles
@@ -350,6 +409,10 @@ version.
 - Help is not reachable from the typing screen (`?` is a typed character); the typing
   keys are listed in the footer and in the help of the other screens.
 - Search is a plain substring match on title and author and is accent-sensitive.
+- The dictionary is modern: archaic senses ("presently" as "at once") and some old
+  words are missing, and multi-word phrases are only found through the Words search,
+  not by picking words on the page. The glossary shows a word's first sense, which for
+  an `-ing` or `-ed` form can be a noun or adjective sense rather than the verb meant.
 - `books_dir` can only be set by editing the config file or via `TYPESHELF_BOOKS`.
 - TypeLit features not built: achievements, named ranks, non-English libraries
   (the book repo is English only), accounts and cross-device sync, visual effects.

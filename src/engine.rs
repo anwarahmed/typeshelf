@@ -49,6 +49,8 @@ pub struct Session {
     /// Gaps between keys that make up `active_ms`.
     gaps: u64,
     last_ms: Option<u64>,
+    /// When the clock was stopped for reading a definition (`suspend`).
+    suspended: Option<u64>,
     stop_on_error: bool,
     space_for_enter: bool,
 }
@@ -69,6 +71,7 @@ impl Session {
             active_ms: 0,
             gaps: 0,
             last_ms: None,
+            suspended: None,
             stop_on_error,
             space_for_enter,
         };
@@ -119,13 +122,35 @@ impl Session {
 
     /// The clock has stopped because no key has come for a while; the next key restarts it.
     pub fn paused(&self, now_ms: u64) -> bool {
+        let now_ms = self.clock(now_ms);
         self.last_ms.is_some_and(|last| !self.done() && now_ms.saturating_sub(last) > PAUSE_AFTER_MS)
+    }
+
+    /// Stops the clock while the typist reads something else, such as a definition.
+    pub fn suspend(&mut self, now_ms: u64) {
+        self.suspended.get_or_insert(now_ms);
+    }
+
+    /// Starts the clock again after `suspend`, leaving out the time in between, so reading a
+    /// definition neither slows the speed nor counts as a pause.
+    pub fn resume(&mut self, now_ms: u64) {
+        if let Some(at) = self.suspended.take()
+            && let Some(last) = &mut self.last_ms
+        {
+            *last += now_ms.saturating_sub(at);
+        }
+    }
+
+    /// The time the clock shows: while suspended, it stays where it stopped.
+    fn clock(&self, now_ms: u64) -> u64 {
+        self.suspended.map_or(now_ms, |at| at.min(now_ms))
     }
 
     pub fn type_char(&mut self, c: char, now_ms: u64) {
         if self.done() {
             return;
         }
+        self.resume(now_ms);
         self.tick(now_ms);
         let want = self.cells[self.pos].key.unwrap_or(' ');
         let got = fold(c).unwrap_or(c);
@@ -175,6 +200,7 @@ impl Session {
 
     /// Typing time so far, including the time since the last key unless that is a pause.
     pub fn elapsed_ms(&self, now_ms: u64) -> u64 {
+        let now_ms = self.clock(now_ms);
         match self.last_ms {
             Some(last) if !self.done() => self.active_ms + self.gap_ms(now_ms.saturating_sub(last)),
             _ => self.active_ms,
@@ -323,6 +349,24 @@ mod tests {
         assert_eq!(s.elapsed_ms(600_000) / 3, 800 / 2);
         s.type_char('e', 600_400);
         assert_eq!((s.stats(0).ms, s.paused(900_000)), (1600, false));
+    }
+
+    #[test]
+    fn suspending_leaves_the_time_out() {
+        let mut s = Session::new("abcd", false, true);
+        s.type_char('a', 0);
+        s.type_char('b', 1000);
+        s.suspend(1500);
+        // Reading for a minute: the clock holds and it is not a pause.
+        assert_eq!((s.elapsed_ms(61_500), s.paused(61_500)), (1500, false));
+        s.resume(61_500);
+        assert_eq!(s.elapsed_ms(62_000), 2000);
+        s.type_char('c', 62_000);
+        assert_eq!(s.stats(0).ms, 2000);
+        // A key typed while suspended resumes the clock first.
+        s.suspend(62_500);
+        s.type_char('d', 70_000);
+        assert_eq!(s.stats(0).ms, 2500);
     }
 
     #[test]

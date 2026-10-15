@@ -3,15 +3,18 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 
+use crate::dict::{self, Dictionary};
 use crate::engine::{Session, Stats};
 use crate::library::Library;
 use crate::log;
 use crate::paginate::{Page, paginate};
 use crate::parse::{Book, parse_book};
-use crate::store::{BookProgress, CURSORS, PAGE_LENGTHS, Record, Settings, State, TEXT_WIDTHS, now_secs};
+use crate::store::{BookProgress, CURSORS, GLOSSARIES, PAGE_LENGTHS, Record, SavedWord, Settings, State, TEXT_WIDTHS, now_secs};
 use crate::theme::{self, THEMES, Theme};
+use crate::ui;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Screen {
@@ -20,6 +23,7 @@ pub enum Screen {
     Typing,
     Stats,
     Settings,
+    Words,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -85,13 +89,46 @@ pub struct Typing {
     pub session: Session,
     /// Set once the page is complete; the result panel shows it.
     pub result: Option<Stats>,
+    /// The page's words, as `(start, end)` cell ranges.
+    pub words: Vec<(usize, usize)>,
+    /// Indices into `words` of the page's uncommon words, each word once; empty until the
+    /// dictionary is loaded.
+    pub uncommon: Vec<usize>,
+    pub lookup: Option<Lookup>,
 }
 
-pub const SETTING_LABELS: [&str; 8] =
-    ["Theme", "Page length", "Text width", "Cursor", "Stop on error", "Space types line breaks", "Live stats while typing", "Update on start"];
+impl Typing {
+    pub fn word(&self, i: usize) -> String {
+        self.words.get(i).map_or(String::new(), |&(s, e)| self.session.cells[s..e].iter().map(|c| c.ch).collect())
+    }
+}
+
+/// Look-up mode on the typing screen: a word is selected instead of typing, and its
+/// definition can be opened. The typing clock is stopped meanwhile.
+pub struct Lookup {
+    /// Index into `Typing::words`.
+    pub word: usize,
+    /// The definition is shown.
+    pub open: bool,
+    pub scroll: usize,
+    /// Opened from typing with ctrl-d or a click, so closing the definition goes straight
+    /// back to typing.
+    pub direct: bool,
+}
+
+pub enum DictState {
+    Unloaded,
+    Downloading,
+    Ready(Box<Dictionary>),
+    Failed(String),
+}
+
+pub const SETTING_LABELS: [&str; 9] =
+    ["Theme", "Page length", "Text width", "Cursor", "Stop on error", "Space types line breaks", "Live stats while typing", "Glossary", "Update on start"];
 
 enum Msg {
     Downloaded(usize, Result<String, String>),
+    Dictionary(Result<(), String>),
 }
 
 pub struct App {
@@ -112,6 +149,15 @@ pub struct App {
     pub open: Option<OpenBook>,
     pub typing: Option<Typing>,
     pub settings_sel: usize,
+
+    pub dict: DictState,
+    /// The word list screen: selection, dictionary search, and how far the definition is scrolled.
+    pub words_sel: usize,
+    pub words_query: String,
+    pub words_searching: bool,
+    pub words_scroll: usize,
+    /// The terminal's size, for finding what a mouse click hit; `main` keeps it current.
+    pub size: Rect,
 
     pub help: bool,
     pub confirm: Option<Confirm>,
@@ -152,6 +198,12 @@ impl App {
             open: None,
             typing: None,
             settings_sel: 0,
+            dict: DictState::Unloaded,
+            words_sel: 0,
+            words_query: String::new(),
+            words_searching: false,
+            words_scroll: 0,
+            size: Rect::new(0, 0, 80, 24),
             help: false,
             confirm: None,
             loading: None,
@@ -184,17 +236,30 @@ impl App {
 
     /// Called every loop iteration: collects finished downloads, expires toasts.
     pub fn tick(&mut self) {
-        while let Ok(Msg::Downloaded(index, res)) = self.rx.try_recv() {
-            if self.loading != Some(index) {
-                continue;
-            }
-            self.loading = None;
-            match res {
-                Ok(text) => {
-                    log::info!("downloaded {:?} ({} bytes)", self.lib.books[index].path, text.len());
-                    self.show_book(index, &text)
+        while let Ok(msg) = self.rx.try_recv() {
+            match msg {
+                Msg::Downloaded(index, res) => {
+                    if self.loading != Some(index) {
+                        continue;
+                    }
+                    self.loading = None;
+                    match res {
+                        Ok(text) => {
+                            log::info!("downloaded {:?} ({} bytes)", self.lib.books[index].path, text.len());
+                            self.show_book(index, &text)
+                        }
+                        Err(e) => self.toast(format!("Download failed: {e}")),
+                    }
                 }
-                Err(e) => self.toast(format!("Download failed: {e}")),
+                Msg::Dictionary(Ok(())) => {
+                    log::info!("downloaded the dictionary to {}", dict::dir().display());
+                    self.dict = DictState::Unloaded;
+                    self.want_dict();
+                }
+                Msg::Dictionary(Err(e)) => {
+                    self.dict = DictState::Failed(e.clone());
+                    self.toast(format!("Could not download the dictionary: {e}"));
+                }
             }
         }
         if self.toast.as_ref().is_some_and(|t| t.1.elapsed().as_secs() >= 4) {
@@ -289,6 +354,78 @@ impl App {
         self.screen = Screen::Book;
     }
 
+    // ---- dictionary ----
+
+    /// True when the dictionary is ready. The first call loads it from disk, or starts
+    /// downloading it if it isn't there yet; a failed load is tried again on the next call.
+    pub fn want_dict(&mut self) -> bool {
+        match self.dict {
+            DictState::Ready(_) => return true,
+            DictState::Downloading => return false,
+            DictState::Unloaded | DictState::Failed(_) => {}
+        }
+        if dict::installed() {
+            let started = Instant::now();
+            match Dictionary::open(&dict::dir()) {
+                Ok(d) => {
+                    log::info!("dictionary loaded from {} in {:?}", dict::dir().display(), started.elapsed());
+                    self.dict = DictState::Ready(Box::new(d));
+                    self.refresh_uncommon();
+                    return true;
+                }
+                Err(e) => {
+                    log::error!("could not load the dictionary from {}: {e}", dict::dir().display());
+                    self.dict = DictState::Failed(format!("{e} (in {})", dict::dir().display()));
+                    return false;
+                }
+            }
+        }
+        log::info!("downloading the dictionary from {}", dict::URL);
+        self.dict = DictState::Downloading;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Dictionary(dict::download()));
+        });
+        false
+    }
+
+    pub fn dictionary(&self) -> Option<&Dictionary> {
+        match &self.dict {
+            DictState::Ready(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Finds the current page's uncommon words, once the dictionary is there.
+    fn refresh_uncommon(&mut self) {
+        let (DictState::Ready(d), Some(t)) = (&self.dict, &mut self.typing) else { return };
+        let chars: Vec<char> = t.session.cells.iter().map(|c| c.ch).collect();
+        let mut seen = dict::names(&chars, &t.words);
+        t.uncommon = (0..t.words.len()).filter(|&i| seen.insert(dict::key(&t.word(i))) && d.uncommon(&t.word(i))).collect();
+    }
+
+    /// Adds a word's dictionary form to the word list, noting the book it was met in when
+    /// saved from the typing screen.
+    fn save_word(&mut self, word: &str) {
+        let Some(lemma) = self.dictionary().and_then(|d| d.define(word).into_iter().next()).map(|e| e.lemma) else {
+            self.toast("That word is not in the dictionary.");
+            return;
+        };
+        if self.state.words.iter().any(|w| w.word == lemma) {
+            self.toast(format!("\"{lemma}\" is already in your word list."));
+            return;
+        }
+        let (book, title) = match &self.open {
+            Some(o) if self.screen == Screen::Typing => (self.lib.books[o.index].path.clone(), o.book.title.clone()),
+            _ => (String::new(), String::new()),
+        };
+        self.state.words.push(SavedWord { word: lemma.clone(), book, title, at: now_secs() });
+        log::info!("saved a word to the word list ({} words)", self.state.words.len());
+        self.save_state();
+        let hint = if self.screen == Screen::Words { "" } else { " (4 to see it)" };
+        self.toast(format!("Saved \"{lemma}\" to your word list{hint}."));
+    }
+
     // ---- typing ----
 
     fn book_key(&self) -> Option<String> {
@@ -326,8 +463,18 @@ impl App {
             session.resumed,
             session.cells.len()
         );
-        self.typing = Some(Typing { ch, pages, page, session, result: None });
+        let words = dict::words(&session.cells.iter().map(|c| c.ch).collect::<Vec<_>>());
+        self.typing = Some(Typing { ch, pages, page, session, result: None, words, uncommon: vec![], lookup: None });
         self.screen = Screen::Typing;
+        self.page_changed();
+    }
+
+    /// A new page is up: the glossary, if on, needs the dictionary and the page's uncommon words.
+    fn page_changed(&mut self) {
+        if self.settings.glossary != "off" {
+            self.want_dict();
+        }
+        self.refresh_uncommon();
     }
 
     fn session_for(&self, page: &Page) -> Session {
@@ -339,9 +486,13 @@ impl App {
         let Some(t) = &self.typing else { return };
         let session = self.session_for(&t.pages[page]);
         let t = self.typing.as_mut().unwrap();
+        t.words = dict::words(&session.cells.iter().map(|c| c.ch).collect::<Vec<_>>());
         t.page = page;
         t.session = session;
         t.result = None;
+        t.lookup = None;
+        t.uncommon = vec![];
+        self.page_changed();
     }
 
     fn next_page(&mut self) {
@@ -459,6 +610,11 @@ impl App {
             4 => on_off(s.stop_on_error),
             5 => on_off(s.space_for_enter),
             6 => on_off(s.live_stats),
+            7 => match s.glossary.as_str() {
+                "word" => "word at cursor".into(),
+                "page" => "uncommon words".into(),
+                _ => "off".into(),
+            },
             _ => on_off(s.auto_update),
         }
     }
@@ -484,6 +640,7 @@ impl App {
             4 => s.stop_on_error = !s.stop_on_error,
             5 => s.space_for_enter = !s.space_for_enter,
             6 => s.live_stats = !s.live_stats,
+            7 => s.glossary = cycle(&GLOSSARIES, s.glossary.as_str(), delta).to_string(),
             _ => s.auto_update = !s.auto_update,
         }
         log::info!("setting {:?} = {}", SETTING_LABELS[i.min(SETTING_LABELS.len() - 1)], self.setting_value(i));
@@ -521,15 +678,18 @@ impl App {
         match self.screen {
             Screen::Typing => self.key_typing(key, ctrl),
             Screen::Library if self.searching => self.key_search(key, ctrl),
+            Screen::Words if self.words_searching => self.key_word_search(key, ctrl),
             _ => match key.code {
                 KeyCode::Char('?') => self.help = true,
                 KeyCode::Char('1') => self.screen = Screen::Library,
                 KeyCode::Char('2') => self.screen = Screen::Stats,
                 KeyCode::Char('3') => self.screen = Screen::Settings,
+                KeyCode::Char('4') => self.show_words(),
                 _ => match self.screen {
                     Screen::Library => self.key_library(key, ctrl),
                     Screen::Book => self.key_book(key, ctrl),
                     Screen::Settings => self.key_settings(key),
+                    Screen::Words => self.key_words(key, ctrl),
                     _ => {
                         if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Left) {
                             self.screen = Screen::Library
@@ -540,18 +700,32 @@ impl App {
         }
     }
 
-    /// The wheel moves the selection in the lists; the list follows it, as with the keys.
-    /// Everything else the mouse does is ignored.
+    /// The wheel moves the selection in the lists (the list follows it, as with the keys)
+    /// and scrolls definitions. A click picks a word: in the text, the glossary or the word
+    /// list. Everything else the mouse does is ignored.
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
-        let d = match mouse.kind {
-            MouseEventKind::ScrollDown => 1,
-            MouseEventKind::ScrollUp => -1,
-            _ => return,
-        };
         if self.help || self.confirm.is_some() || self.loading.is_some() {
             return;
         }
+        let at = Position::new(mouse.column, mouse.row);
+        let d = match mouse.kind {
+            MouseEventKind::ScrollDown => 1,
+            MouseEventKind::ScrollUp => -1,
+            MouseEventKind::Down(MouseButton::Left) => return self.click(at),
+            _ => return,
+        };
+        let body = ui::frame_layout(self.size)[1];
         match self.screen {
+            Screen::Typing => self.scroll_definition(d * 3),
+            Screen::Words => {
+                let [_, list, def] = ui::words_layout(body);
+                if def.contains(at) {
+                    self.scroll_words(d * 3);
+                } else if list.contains(at) {
+                    self.words_sel = step(self.word_items().len(), self.words_sel, d);
+                    self.words_scroll = 0;
+                }
+            }
             Screen::Library => self.lib_sel = step(self.filtered.len(), self.lib_sel, d),
             Screen::Book => {
                 if let Some(open) = &mut self.open {
@@ -559,6 +733,44 @@ impl App {
                 }
             }
             Screen::Settings => self.settings_sel = step(SETTING_LABELS.len(), self.settings_sel, d),
+            _ => {}
+        }
+    }
+
+    fn click(&mut self, at: Position) {
+        let body = ui::frame_layout(self.size)[1];
+        match self.screen {
+            Screen::Typing => {
+                let Some(view) = ui::typing_view(self, body) else { return };
+                if ui::definition_rect(self, &view, body).is_some_and(|r| r.contains(at)) {
+                    return;
+                }
+                let Some(t) = &self.typing else { return };
+                let word = match view.glossary {
+                    Some(g) if g.contains(at) => ui::glossary_hit(self, &view, at),
+                    _ => ui::cell_at(&view, &t.session.cells, at).and_then(|c| t.words.iter().position(|w| w.0 <= c && c < w.1)),
+                };
+                match (word, t.lookup.as_ref()) {
+                    (Some(w), Some(_)) => self.select_word(w, true),
+                    (Some(w), None) => self.enter_lookup(Some(w), true, true),
+                    // A click away from any word closes the definition.
+                    (None, Some(l)) if l.open => self.close_definition(),
+                    _ => {}
+                }
+            }
+            Screen::Words => {
+                let [search, list, _] = ui::words_layout(body);
+                if search.contains(at) {
+                    self.words_searching = true;
+                } else if list.contains(at) {
+                    let n = self.word_items().len();
+                    let row = ui::window(self.words_sel, n, list.height as usize) + (at.y - list.y) as usize;
+                    if row < n {
+                        self.words_sel = row;
+                        self.words_scroll = 0;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -738,8 +950,12 @@ impl App {
             self.screen = Screen::Book;
             return;
         };
+        if t.lookup.is_some() {
+            return self.key_lookup(key, ctrl);
+        }
         if t.result.is_some() {
             match key.code {
+                KeyCode::Tab | KeyCode::Char('l') => self.enter_lookup(None, false, false),
                 KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('n') | KeyCode::Right => self.next_page(),
                 KeyCode::Char('r') => {
                     let page = t.page;
@@ -754,6 +970,8 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => self.leave_typing(),
+            KeyCode::Tab => self.enter_lookup(None, false, false),
+            KeyCode::Char('d') if ctrl => self.enter_lookup(None, true, true),
             KeyCode::Char('r') if ctrl => {
                 let page = t.page;
                 self.goto_page(page)
@@ -775,6 +993,204 @@ impl App {
         }
         if self.typing.as_ref().is_some_and(|t| t.result.is_none() && t.session.done()) {
             self.complete_page();
+        }
+    }
+
+    // ---- looking up words ----
+
+    /// Starts look-up mode on `word`, or the word at the cursor, and stops the typing clock.
+    fn enter_lookup(&mut self, word: Option<usize>, open: bool, direct: bool) {
+        let now = self.now_ms();
+        let Some(t) = &mut self.typing else { return };
+        let at = t.session.pos;
+        let Some(word) = word.or_else(|| t.words.iter().position(|w| w.1 > at).or(t.words.len().checked_sub(1))) else {
+            self.toast("There are no words on this page.");
+            return;
+        };
+        t.session.suspend(now);
+        t.lookup = Some(Lookup { word, open: false, scroll: 0, direct });
+        log::info!("look-up mode on chapter {} page {} ({})", t.ch, t.page + 1, if direct { "define at once" } else { "pick a word" });
+        if open {
+            self.select_word(word, true);
+        }
+    }
+
+    /// Selects a word in look-up mode, and opens its definition if `open`.
+    fn select_word(&mut self, word: usize, open: bool) {
+        let Some(l) = self.typing.as_mut().and_then(|t| t.lookup.as_mut()) else { return };
+        l.word = word;
+        l.scroll = 0;
+        if open {
+            l.open = true;
+            self.want_dict();
+        }
+    }
+
+    fn close_definition(&mut self) {
+        match self.typing.as_mut().and_then(|t| t.lookup.as_mut()) {
+            Some(l) if l.open && !l.direct => l.open = false,
+            Some(_) => self.leave_lookup(),
+            None => {}
+        }
+    }
+
+    fn leave_lookup(&mut self) {
+        let now = self.now_ms();
+        if let Some(t) = &mut self.typing {
+            t.lookup = None;
+            t.session.resume(now);
+        }
+    }
+
+    fn key_lookup(&mut self, key: KeyEvent, ctrl: bool) {
+        let Some(t) = &self.typing else { return };
+        let Some(l) = &t.lookup else { return };
+        let (word, open, n) = (l.word, l.open, t.words.len());
+        // `uncommon` holds word indices in page order.
+        let uncommon = |forward: bool| if forward { t.uncommon.iter().find(|&&u| u > word) } else { t.uncommon.iter().rev().find(|&&u| u < word) }.copied();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.close_definition(),
+            KeyCode::Char('d') if ctrl && open => self.close_definition(),
+            KeyCode::Tab => self.leave_lookup(),
+            KeyCode::Enter | KeyCode::Char(' ') if open => self.close_definition(),
+            KeyCode::Enter | KeyCode::Char(' ') => self.select_word(word, true),
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('b') => self.select_word(word.saturating_sub(1), open),
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('w') => self.select_word((word + 1).min(n.saturating_sub(1)), open),
+            KeyCode::Home | KeyCode::Char('g') => self.select_word(0, open),
+            KeyCode::End | KeyCode::Char('G') => self.select_word(n.saturating_sub(1), open),
+            KeyCode::Char(']') | KeyCode::Char('n') => match uncommon(true) {
+                Some(w) => self.select_word(w, open),
+                None => self.toast("No more uncommon words on this page."),
+            },
+            KeyCode::Char('[') | KeyCode::Char('p') => match uncommon(false) {
+                Some(w) => self.select_word(w, open),
+                None => self.toast("No uncommon words before this one."),
+            },
+            KeyCode::Char('s') if open => {
+                let w = t.word(word);
+                self.save_word(&w);
+            }
+            KeyCode::Down | KeyCode::Char('j') if open => self.scroll_definition(1),
+            KeyCode::Up | KeyCode::Char('k') if open => self.scroll_definition(-1),
+            KeyCode::PageDown if open => self.scroll_definition(8),
+            KeyCode::PageUp if open => self.scroll_definition(-8),
+            KeyCode::Down | KeyCode::Char('j') => self.word_on_next_line(1),
+            KeyCode::Up | KeyCode::Char('k') => self.word_on_next_line(-1),
+            _ => {}
+        }
+    }
+
+    fn scroll_definition(&mut self, d: isize) {
+        let max = ui::max_scroll(self) as isize;
+        if let Some(l) = self.typing.as_mut().and_then(|t| t.lookup.as_mut()).filter(|l| l.open) {
+            l.scroll = (l.scroll as isize + d).clamp(0, max) as usize;
+        }
+    }
+
+    /// Moves the selection to the word on the line above or below that starts nearest the
+    /// selected one's column.
+    fn word_on_next_line(&mut self, d: isize) {
+        let body = ui::frame_layout(self.size)[1];
+        let Some(view) = ui::typing_view(self, body) else { return };
+        let Some(t) = &self.typing else { return };
+        let Some(l) = &t.lookup else { return };
+        let Some((row, x)) = ui::cell_xy(&view, &t.session.cells, t.words[l.word].0) else { return };
+        let mut r = row as isize + d;
+        while r >= 0 && (r as usize) < view.rows.len() {
+            let starts: Vec<(usize, u16)> = t
+                .words
+                .iter()
+                .enumerate()
+                .filter_map(|(i, w)| ui::cell_xy(&view, &t.session.cells, w.0).filter(|p| p.0 == r as usize).map(|p| (i, p.1)))
+                .collect();
+            if let Some(&(i, _)) = starts.iter().min_by_key(|(_, wx)| wx.abs_diff(x)) {
+                return self.select_word(i, false);
+            }
+            r += d;
+        }
+    }
+
+    // ---- word list ----
+
+    fn show_words(&mut self) {
+        self.screen = Screen::Words;
+        self.want_dict();
+    }
+
+    /// What the word list shows: dictionary matches while searching, else the saved words, newest first.
+    pub fn word_items(&self) -> Vec<String> {
+        if self.words_query.trim().is_empty() {
+            self.state.words.iter().rev().map(|w| w.word.clone()).collect()
+        } else {
+            self.dictionary().map_or(vec![], |d| d.complete(&self.words_query, 200))
+        }
+    }
+
+    fn scroll_words(&mut self, d: isize) {
+        self.words_scroll = (self.words_scroll as isize + d).clamp(0, ui::max_scroll(self) as isize) as usize;
+    }
+
+    fn key_words(&mut self, key: KeyEvent, ctrl: bool) {
+        let items = self.word_items();
+        if let Some(d) = Self::nav_delta(key, ctrl) {
+            self.words_sel = step(items.len(), self.words_sel, d);
+            self.words_scroll = 0;
+            return;
+        }
+        match key.code {
+            KeyCode::Char('/') => self.words_searching = true,
+            KeyCode::Char('J') => self.scroll_words(1),
+            KeyCode::Char('K') => self.scroll_words(-1),
+            KeyCode::Char('s') if !self.words_query.is_empty() => {
+                if let Some(w) = items.get(self.words_sel) {
+                    let w = w.clone();
+                    self.save_word(&w);
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Delete if self.words_query.is_empty() && !items.is_empty() => {
+                let i = self.state.words.len() - 1 - self.words_sel.min(self.state.words.len() - 1);
+                let w = self.state.words.remove(i);
+                log::info!("removed a word from the word list ({} words)", self.state.words.len());
+                self.save_state();
+                self.toast(format!("Removed \"{}\" from your word list.", w.word));
+                self.words_sel = self.words_sel.min(self.state.words.len().saturating_sub(1));
+            }
+            KeyCode::Esc if !self.words_query.is_empty() => self.set_words_query(String::new()),
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Library,
+            _ => {}
+        }
+    }
+
+    fn set_words_query(&mut self, q: String) {
+        self.words_query = q;
+        self.words_sel = 0;
+        self.words_scroll = 0;
+    }
+
+    fn key_word_search(&mut self, key: KeyEvent, ctrl: bool) {
+        let n = self.word_items().len();
+        match key.code {
+            KeyCode::Esc => {
+                self.words_searching = false;
+                self.set_words_query(String::new());
+            }
+            KeyCode::Enter => self.words_searching = false,
+            KeyCode::Down => self.words_sel = step(n, self.words_sel, 1),
+            KeyCode::Up => self.words_sel = step(n, self.words_sel, -1),
+            KeyCode::Char('n') if ctrl => self.words_sel = step(n, self.words_sel, 1),
+            KeyCode::Char('p') if ctrl => self.words_sel = step(n, self.words_sel, -1),
+            KeyCode::Char('u') | KeyCode::Char('w') if ctrl => self.set_words_query(String::new()),
+            KeyCode::Backspace => {
+                let mut q = self.words_query.clone();
+                q.pop();
+                self.set_words_query(q);
+            }
+            KeyCode::Char(c) if !ctrl => {
+                let q = format!("{}{c}", self.words_query);
+                self.set_words_query(q);
+                self.want_dict();
+            }
+            _ => {}
         }
     }
 
