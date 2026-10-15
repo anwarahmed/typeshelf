@@ -80,6 +80,7 @@ Single binary crate, no async. One file per concern in `src/`:
 | `paginate.rs`  | Chapter lines → `Page`s of about N characters |
 | `normalize.rs` | `normalize_text` (rewrite typography) and `fold` (char → key) |
 | `dict.rs`      | The dictionary (Open English WordNet): download + unzip, lookups, inflections, common words, page words |
+| `clip.rs`      | Copying to the clipboard: `pbcopy` / `wl-copy` / `xclip` / `xsel`, else OSC 52 |
 | `library.rs`   | Embedded catalog, download + disk cache, user texts, catalog builder |
 | `store.rs`     | `Settings` and `State` (progress, history, missed keys) as JSON on disk |
 | `theme.rs`     | Color themes |
@@ -103,17 +104,21 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
 - **Frames reach the terminal in one write.** ratatui draws into `main::FrameWriter`,
   which sends a frame at once and skips one identical to the last. ratatui alone
   flushes the cursor's show and move separately on every frame, which made the cursor
-  flicker on macOS. Don't write to stdout between frames except for the cursor style.
-- **The mouse is captured for the wheel and for picking words.** `App::on_mouse` moves
-  the selection in the lists (the lists stay stateless: the wheel moves the selection,
-  not a scroll offset), scrolls definitions, and handles a left click on the typing
-  screen (a word in the text or the glossary) and the Words screen; it ignores other
-  clicks and motion. Capture is turned off on exit and in the panic hook, since
+  flicker on macOS. Don't write to stdout between frames except for the cursor style
+  and `clip`'s OSC 52 clipboard sequence (which draws nothing).
+- **The mouse is captured for the wheel, picking words and selecting text.**
+  `App::on_mouse` moves the selection in the lists (the lists stay stateless: the wheel
+  moves the selection, not a scroll offset), scrolls definitions, picks an item on the
+  Words screen, and on the typing screen: a press starts a selection (`Typing::drag`,
+  cell indices), dragging extends it (`ui::cell_near` snaps to the nearest cell), letting
+  go copies it, and a second press on the same word within `DOUBLE_CLICK_MS` (crossterm
+  reports no double-clicks, so `App::last_click` times them) opens its definition. It
+  ignores other buttons and plain motion. Capture is turned off on exit and in the panic hook, since
   `ratatui::restore` doesn't do it. The cost: selecting text in the terminal needs shift
   (option in macOS Terminal) while the app runs.
 - **Clicks hit what is drawn because layout is shared.** `ui` exposes pure layout
   functions (`frame_layout`, `typing_view`, `definition_rect`, `words_layout`,
-  `glossary_hit`, `max_scroll`) that both drawing and `App` call; `main` keeps
+  `glossary_hit`, `cell_near`, `max_scroll`) that both drawing and `App` call; `main` keeps
   `App::size` at the terminal's size so `App` can run them. Don't compute a position in
   `draw_*` that a click needs without going through one of these.
 - **Themes carry roles, not colors.** Widgets use `Styles` (`base`, `dim`, `accent`,
@@ -291,7 +296,7 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
     as space or nothing ("to-morrow" → "tomorrow").
   - *Look-up mode* stops the typing clock (`Session::suspend` / `resume` shift the last
     key's time by the gap, so reading neither lowers the speed nor shows as a pause).
-    `Lookup::direct` marks a look-up started with `ctrl-d` or a click: closing its
+    `Lookup::direct` marks a look-up started with `ctrl-d` or a double-click: closing its
     definition returns straight to typing, while one started with `tab` returns to
     picking words. `tab` isn't typed text: the parser turns tabs into spaces.
   - *Uncommon words* (the glossary's page list and `]` / `[`): in the dictionary, longer
@@ -307,6 +312,21 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
     and are shown newest first. A word saved from the Words screen's search has no book.
   - The glossary only appears when the terminal has room for it beside the text
     (`ui::GLOSSARY_MIN`); the setting stays on and it comes back when widened.
+- **Selecting and copying** (since 0.3.1, asked for by the user once they had used
+  the dictionary on a Mac). A single click used to open a definition, which made a click
+  to start a selection impossible, so a definition now takes a double-click, in the
+  glossary too for consistency, and a single click only closes an open definition and
+  starts a selection. The mouse selects by character and copies on release, as terminals
+  do. The keyboard selects in look-up mode, because every printable key is typed text
+  while typing and look-up mode already stops the clock and has a word cursor: `v` (or
+  shift with an arrow) sets `Lookup::anchor`, and the selection runs by words from it to
+  the picked word; `c` / `y` copy it, else the open definition (`dict::plain`), else the
+  word. Copied text comes from the page's cells, not the screen, so prose wrapped on
+  screen comes out as one line. Considered and not chosen: shift-arrows selecting from
+  the typing cursor without a mode (clock keeps running, and Terminal.app may keep
+  shift-up/down), and copy-only units (word, sentence, page). The clipboard needs no
+  crate: the platform's tool, else OSC 52; over ssh OSC 52 first, since the clipboard
+  that matters is on the user's side. Copies are logged by length, never the text.
 - **Levels.** TypeLit has ranks; here `State::level` derives a level from total
   characters typed (level `n` at `500 * n * (n - 1)`). It is computed from history,
   never stored. `State::averages` gives per-book and per-chapter speed for the book
@@ -337,7 +357,7 @@ When something misbehaves, read the log first. A build run from `target/` writes
 It records: startup (version, commit, OS, TERM, settings), the update check and its
 outcome (including why it was skipped), every book open (chapters, parse
 time, saved progress), downloads (books and the dictionary, and the dictionary's load
-time), look-up mode being entered and words saved or removed (counts, never the words), each typing session start (chapter, page, saved
+time), look-up mode being entered and words saved or removed (counts, never the words), copies to the clipboard (length and tool, never the text), each typing session start (chapter, page, saved
 cursor, resume cell), pages left part-way and completed, setting changes, every footer
 message shown to the user (`toast:` lines, which is where errors surface), and panics
 with a backtrace. It never records typed keys or book text. When adding a feature

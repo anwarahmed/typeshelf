@@ -1,11 +1,13 @@
 //! Application state and key handling. Drawing lives in `ui`.
 
+use std::ops::Range;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
+use crate::clip;
 use crate::dict::{self, Dictionary};
 use crate::engine::{Session, Stats};
 use crate::library::Library;
@@ -95,13 +97,42 @@ pub struct Typing {
     /// dictionary is loaded.
     pub uncommon: Vec<usize>,
     pub lookup: Option<Lookup>,
+    /// Text selected with the mouse; kept after the button is let go, until the next key or click.
+    pub drag: Option<Drag>,
 }
 
 impl Typing {
     pub fn word(&self, i: usize) -> String {
-        self.words.get(i).map_or(String::new(), |&(s, e)| self.session.cells[s..e].iter().map(|c| c.ch).collect())
+        self.words.get(i).map_or(String::new(), |&(s, e)| self.text(s..e))
+    }
+
+    pub fn text(&self, cells: Range<usize>) -> String {
+        self.session.cells[cells].iter().map(|c| c.ch).collect()
+    }
+
+    /// The selected cells: a mouse drag's, else look-up mode's words from the anchor to
+    /// the selected one.
+    pub fn selection(&self) -> Option<Range<usize>> {
+        if let Some(d) = self.drag.filter(|d| d.anchor != d.head) {
+            return Some(d.anchor.min(d.head)..d.anchor.max(d.head) + 1);
+        }
+        let l = self.lookup.as_ref()?;
+        let a = l.anchor?;
+        Some(self.words.get(a.min(l.word))?.0..self.words.get(a.max(l.word))?.1)
     }
 }
+
+/// A selection made with the mouse, as cell indices; both ends are included.
+#[derive(Clone, Copy)]
+pub struct Drag {
+    pub anchor: usize,
+    pub head: usize,
+    /// The button is still down.
+    pub held: bool,
+}
+
+/// Two clicks on the same word within this time are a double-click.
+const DOUBLE_CLICK_MS: u64 = 500;
 
 /// Look-up mode on the typing screen: a word is selected instead of typing, and its
 /// definition can be opened. The typing clock is stopped meanwhile.
@@ -114,6 +145,9 @@ pub struct Lookup {
     /// Opened from typing with ctrl-d or a click, so closing the definition goes straight
     /// back to typing.
     pub direct: bool,
+    /// Where a selection made with the keys started (`v`, or shift with an arrow), as a
+    /// word index; the selection runs from it to `word`.
+    pub anchor: Option<usize>,
 }
 
 pub enum DictState {
@@ -158,6 +192,8 @@ pub struct App {
     pub words_scroll: usize,
     /// The terminal's size, for finding what a mouse click hit; `main` keeps it current.
     pub size: Rect,
+    /// The last click on a word (time, word index), to tell a double-click.
+    last_click: Option<(u64, usize)>,
 
     pub help: bool,
     pub confirm: Option<Confirm>,
@@ -169,6 +205,15 @@ pub struct App {
     clock: Instant,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
+}
+
+/// Names a copied piece of text for a message: the text itself when it is short.
+fn describe(text: &str) -> String {
+    let words = text.split_whitespace().count();
+    match words {
+        1 if text.chars().count() <= 30 => format!("\"{}\"", text.trim()),
+        _ => format!("{words} words"),
+    }
 }
 
 fn step(len: usize, cur: usize, delta: isize) -> usize {
@@ -204,6 +249,7 @@ impl App {
             words_searching: false,
             words_scroll: 0,
             size: Rect::new(0, 0, 80, 24),
+            last_click: None,
             help: false,
             confirm: None,
             loading: None,
@@ -464,7 +510,7 @@ impl App {
             session.cells.len()
         );
         let words = dict::words(&session.cells.iter().map(|c| c.ch).collect::<Vec<_>>());
-        self.typing = Some(Typing { ch, pages, page, session, result: None, words, uncommon: vec![], lookup: None });
+        self.typing = Some(Typing { ch, pages, page, session, result: None, words, uncommon: vec![], lookup: None, drag: None });
         self.screen = Screen::Typing;
         self.page_changed();
     }
@@ -491,6 +537,7 @@ impl App {
         t.session = session;
         t.result = None;
         t.lookup = None;
+        t.drag = None;
         t.uncommon = vec![];
         self.page_changed();
     }
@@ -701,8 +748,9 @@ impl App {
     }
 
     /// The wheel moves the selection in the lists (the list follows it, as with the keys)
-    /// and scrolls definitions. A click picks a word: in the text, the glossary or the word
-    /// list. Everything else the mouse does is ignored.
+    /// and scrolls definitions. On the typing screen, dragging selects text and copies it
+    /// when let go, and a double-click on a word defines it; a click picks an item in the
+    /// word list. Everything else the mouse does is ignored.
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
         if self.help || self.confirm.is_some() || self.loading.is_some() {
             return;
@@ -712,6 +760,8 @@ impl App {
             MouseEventKind::ScrollDown => 1,
             MouseEventKind::ScrollUp => -1,
             MouseEventKind::Down(MouseButton::Left) => return self.click(at),
+            MouseEventKind::Drag(MouseButton::Left) => return self.drag_to(at),
+            MouseEventKind::Up(MouseButton::Left) => return self.release(),
             _ => return,
         };
         let body = ui::frame_layout(self.size)[1];
@@ -745,17 +795,29 @@ impl App {
                 if ui::definition_rect(self, &view, body).is_some_and(|r| r.contains(at)) {
                     return;
                 }
+                let now = self.now_ms();
                 let Some(t) = &self.typing else { return };
-                let word = match view.glossary {
-                    Some(g) if g.contains(at) => ui::glossary_hit(self, &view, at),
-                    _ => ui::cell_at(&view, &t.session.cells, at).and_then(|c| t.words.iter().position(|w| w.0 <= c && c < w.1)),
+                let in_glossary = view.glossary.is_some_and(|g| g.contains(at));
+                let word = match in_glossary {
+                    true => ui::glossary_hit(self, &view, at),
+                    false => ui::cell_at(&view, &t.session.cells, at).and_then(|c| t.words.iter().position(|w| w.0 <= c && c < w.1)),
                 };
-                match (word, t.lookup.as_ref()) {
-                    (Some(w), Some(_)) => self.select_word(w, true),
-                    (Some(w), None) => self.enter_lookup(Some(w), true, true),
-                    // A click away from any word closes the definition.
-                    (None, Some(l)) if l.open => self.close_definition(),
+                let double = word.is_some() && self.last_click.is_some_and(|(ms, w)| Some(w) == word && now.saturating_sub(ms) <= DOUBLE_CLICK_MS);
+                self.last_click = if double { None } else { word.map(|w| (now, w)) };
+                let looking = t.lookup.as_ref().map(|l| l.open);
+                let cell = if view.col.contains(at) { ui::cell_near(&view, &t.session.cells, at) } else { None };
+                if let Some(t) = &mut self.typing {
+                    t.drag = None;
+                }
+                match (double, word, looking) {
+                    (true, Some(w), Some(_)) => return self.select_word(w, true),
+                    (true, Some(w), None) => return self.enter_lookup(Some(w), true, true),
+                    // A single click closes the definition, and may start a selection.
+                    (_, _, Some(true)) => self.close_definition(),
                     _ => {}
+                }
+                if let (Some(t), Some(c)) = (&mut self.typing, cell) {
+                    t.drag = Some(Drag { anchor: c, head: c, held: true });
                 }
             }
             Screen::Words => {
@@ -773,6 +835,42 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn drag_to(&mut self, at: Position) {
+        let body = ui::frame_layout(self.size)[1];
+        let Some(view) = ui::typing_view(self, body).filter(|_| matches!(self.screen, Screen::Typing)) else { return };
+        let Some(t) = &mut self.typing else { return };
+        if let (Some(d), Some(c)) = (t.drag.as_mut().filter(|d| d.held), ui::cell_near(&view, &t.session.cells, at)) {
+            d.head = c;
+        }
+    }
+
+    /// Letting go of the button copies what was dragged over, as terminals do.
+    fn release(&mut self) {
+        let Some(t) = &mut self.typing else { return };
+        let Some(d) = t.drag.as_mut().filter(|d| d.held) else { return };
+        d.held = false;
+        if let Some(r) = t.selection() {
+            let text = t.text(r);
+            self.copy(&text, &describe(&text));
+        }
+    }
+
+    /// Copies `text` and says so; `what` names it for the message.
+    fn copy(&mut self, text: &str, what: &str) {
+        let how = clip::copy(text);
+        log::info!("copied {} characters to the clipboard (via {how})", text.chars().count());
+        self.toast(if how == "terminal" { format!("Copied {what} (if the terminal allows it).") } else { format!("Copied {what}.") });
+    }
+
+    fn copy_definition(&mut self, word: &str) {
+        let Some(d) = self.dictionary() else { return self.toast("The dictionary is not loaded yet.") };
+        let entries = d.define(word);
+        if entries.is_empty() {
+            return self.toast(format!("\"{word}\" is not in the dictionary."));
+        }
+        self.copy(&dict::plain(&entries), &format!("the definition of \"{word}\""));
     }
 
     fn confirmed(&mut self, confirm: Confirm) {
@@ -950,9 +1048,14 @@ impl App {
             self.screen = Screen::Book;
             return;
         };
+        // A key drops a mouse selection, unless it copies it.
         if t.lookup.is_some() {
+            if !matches!(key.code, KeyCode::Char('c') | KeyCode::Char('y')) {
+                t.drag = None;
+            }
             return self.key_lookup(key, ctrl);
         }
+        t.drag = None;
         if t.result.is_some() {
             match key.code {
                 KeyCode::Tab | KeyCode::Char('l') => self.enter_lookup(None, false, false),
@@ -1008,7 +1111,7 @@ impl App {
             return;
         };
         t.session.suspend(now);
-        t.lookup = Some(Lookup { word, open: false, scroll: 0, direct });
+        t.lookup = Some(Lookup { word, open: false, scroll: 0, direct, anchor: None });
         log::info!("look-up mode on chapter {} page {} ({})", t.ch, t.page + 1, if direct { "define at once" } else { "pick a word" });
         if open {
             self.select_word(word, true);
@@ -1043,13 +1146,22 @@ impl App {
     }
 
     fn key_lookup(&mut self, key: KeyEvent, ctrl: bool) {
+        // Shift with a movement key extends a selection, starting one if there is none.
+        let moves = matches!(key.code, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End);
+        if key.modifiers.contains(KeyModifiers::SHIFT) && moves && self.typing.as_ref().and_then(|t| t.lookup.as_ref()).is_some_and(|l| l.anchor.is_none()) {
+            self.toggle_selection();
+        }
         let Some(t) = &self.typing else { return };
         let Some(l) = &t.lookup else { return };
         let (word, open, n) = (l.word, l.open, t.words.len());
+        let selecting = t.selection().is_some();
         // `uncommon` holds word indices in page order.
         let uncommon = |forward: bool| if forward { t.uncommon.iter().find(|&&u| u > word) } else { t.uncommon.iter().rev().find(|&&u| u < word) }.copied();
         match key.code {
+            KeyCode::Esc | KeyCode::Char('q') if selecting => self.clear_selection(),
             KeyCode::Esc | KeyCode::Char('q') => self.close_definition(),
+            KeyCode::Char('v') => self.toggle_selection(),
+            KeyCode::Char('c') | KeyCode::Char('y') => self.copy_lookup(),
             KeyCode::Char('d') if ctrl && open => self.close_definition(),
             KeyCode::Tab => self.leave_lookup(),
             KeyCode::Enter | KeyCode::Char(' ') if open => self.close_definition(),
@@ -1077,6 +1189,41 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.word_on_next_line(1),
             KeyCode::Up | KeyCode::Char('k') => self.word_on_next_line(-1),
             _ => {}
+        }
+    }
+
+    /// Starts a selection at the selected word, closing its definition, or drops the selection.
+    fn toggle_selection(&mut self) {
+        let Some(l) = self.typing.as_mut().and_then(|t| t.lookup.as_mut()) else { return };
+        l.anchor = match l.anchor {
+            Some(_) => None,
+            None => Some(l.word),
+        };
+        l.open = false;
+    }
+
+    fn clear_selection(&mut self) {
+        if let Some(t) = &mut self.typing {
+            t.drag = None;
+            if let Some(l) = &mut t.lookup {
+                l.anchor = None;
+            }
+        }
+    }
+
+    /// Copies the selection; with none, the open definition, else the selected word.
+    fn copy_lookup(&mut self) {
+        let Some(t) = &self.typing else { return };
+        let Some(l) = &t.lookup else { return };
+        let word = t.word(l.word);
+        if let Some(r) = t.selection() {
+            let text = t.text(r);
+            self.clear_selection();
+            self.copy(&text, &describe(&text));
+        } else if l.open {
+            self.copy_definition(&word);
+        } else {
+            self.copy(&word, &describe(&word));
         }
     }
 
@@ -1139,6 +1286,12 @@ impl App {
         }
         match key.code {
             KeyCode::Char('/') => self.words_searching = true,
+            KeyCode::Char('c') | KeyCode::Char('y') => {
+                if let Some(w) = items.get(self.words_sel) {
+                    let w = w.clone();
+                    self.copy_definition(&w);
+                }
+            }
             KeyCode::Char('J') => self.scroll_words(1),
             KeyCode::Char('K') => self.scroll_words(-1),
             KeyCode::Char('s') if !self.words_query.is_empty() => {
