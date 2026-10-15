@@ -1,4 +1,5 @@
 mod app;
+mod clip;
 mod dict;
 mod engine;
 mod library;

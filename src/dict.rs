@@ -83,6 +83,34 @@ pub struct Entry {
     pub senses: Vec<Sense>,
 }
 
+/// The entries as plain text, for the clipboard: each dictionary form, then its senses
+/// numbered under each part of speech, with examples and other words.
+pub fn plain(entries: &[Entry]) -> String {
+    let mut out = String::new();
+    for e in entries {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out += &format!("{}\n", e.lemma);
+        let (mut pos, mut num) = (None, 0);
+        for s in &e.senses {
+            if pos != Some(s.pos) {
+                out += &format!("{}\n", s.pos.label());
+                (pos, num) = (Some(s.pos), 0);
+            }
+            num += 1;
+            out += &format!("{num:>2}. {}\n", s.def);
+            for ex in &s.examples {
+                out += &format!("    \"{ex}\"\n");
+            }
+            if !s.also.is_empty() {
+                out += &format!("    also: {}\n", s.also.join(", "));
+            }
+        }
+    }
+    out
+}
+
 /// A sorted text file in memory, with the start of each line that isn't part of the
 /// license header (those start with a space).
 struct Sorted {
@@ -494,6 +522,16 @@ mod tests {
         let verb = &e[0].senses[1];
         assert_eq!((verb.pos, verb.def.as_str()), (Pos::Verb, "consent to, give permission; permit"));
         assert_eq!(verb.also, ["permit", "allow", "let"]);
+    }
+
+    #[test]
+    fn copies_a_definition_as_plain_text() {
+        let text = plain(&tiny().define("countenance"));
+        assert_eq!(
+            text,
+            "countenance\nnoun\n 1. the appearance conveyed by a person's face\n    \"a pleasant countenance\"\n    \"a stern visage\"\n    also: visage\n\
+             verb\n 1. consent to, give permission; permit\n    \"She permitted her son to visit\"\n    also: permit, allow, let\n"
+        );
     }
 
     #[test]

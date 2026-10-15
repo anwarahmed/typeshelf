@@ -11,8 +11,9 @@ affiliated with or endorsed by TypeLit, and shares no code or content with it.
 - Your own texts: `typeshelf notes.txt`
 - Progress saved down to the character; reopen a chapter and the cursor is where you left it
 - Speed and accuracy per page, chapter and book; daily volume, most-missed keys and levels
-- A built-in dictionary: look up any word on the page with the keyboard or a click, keep
-  a list of the words you saved, and optionally show a glossary of the page's uncommon words
+- A built-in dictionary: look up any word on the page with the keyboard or a double-click,
+  keep a list of the words you saved, and optionally show a glossary of the page's uncommon words
+- Select and copy the text you are typing, with the mouse or the keyboard
 - Themes, including one that follows your terminal's own colors
 
 ## Install
@@ -123,8 +124,8 @@ Press `?` for the keys of the screen you are on (everywhere except while typing,
 | Library  | `enter` open · `/` search · `tab` switch shelf · `s` sort · `c` continue last book · `d` delete one of your texts · `q` quit |
 | Book     | `enter` type chapter · `c` continue where you left off · `r` reset progress · `esc` back |
 | Typing   | `backspace` fix · `ctrl-w` or `alt-backspace` delete word · `ctrl-r` restart page · `ctrl-n` / `ctrl-p` next / previous page · `tab` look up words · `ctrl-d` define the word at the cursor · `esc` back to chapters |
-| Looking up | arrows or `h` `j` `k` `l` pick a word · `]` `[` next / previous uncommon word · `enter` define · `s` save to your word list · `esc` close · `tab` back to typing |
-| Words    | `/` look up any word · `s` save it · `d` remove a saved word · `J` `K` or the wheel scroll the definition |
+| Looking up | arrows or `h` `j` `k` `l` pick a word · `]` `[` next / previous uncommon word · `enter` define · `s` save to your word list · `v` or `shift` with an arrow select · `c` copy · `esc` close · `tab` back to typing |
+| Words    | `/` look up any word · `s` save it · `d` remove a saved word · `c` copy the definition · `J` `K` or the wheel scroll the definition |
 | Anywhere | `ctrl-c` quit |
 
 Leaving a page part-way keeps your place: the chapter reopens with the cursor where
@@ -141,25 +142,37 @@ stepping away costs nothing.
 ### Looking up words
 
 Press `tab` while typing to pick a word on the page, and `enter` to see what it means;
-`ctrl-d` jumps straight to the definition of the word at the cursor, and clicking a word
-does the same. The typing clock stops while you read and carries on afterwards, so a
+`ctrl-d` jumps straight to the definition of the word at the cursor, and double-clicking
+a word does the same. The typing clock stops while you read and carries on afterwards, so a
 look-up never costs speed. `s` saves a word to your list, which is on the Words screen
 (`4`) along with a search of the whole dictionary.
 
 Settings → Glossary adds a panel beside the text, when the terminal is wide enough. It
 shows either the definition of the word at the cursor, or the page's uncommon words with
-their meanings; click one, or use `]` and `[` in look-up mode, to open it.
+their meanings; double-click one, or use `]` and `[` in look-up mode, to open it.
 
 The dictionary is [Open English WordNet](https://en-word.net/) (over 100,000 English words and phrases).
 It is downloaded the first time you look something up (10 MB, 25 MB unpacked) and kept
 with the cached books. It has nouns, verbs, adjectives and adverbs, but not words like
 "the" or "upon", and it is a modern dictionary: an old sense of a word may be missing.
 
+### Copying text
+
+Drag over the text with the mouse to select it; letting go copies it. From the keyboard,
+press `tab` for look-up mode, then `v` to start selecting at the picked word and move to
+extend the selection a word or a line at a time (or hold `shift` with the arrows, no `v`
+needed), and `c` or `y` to copy. With nothing selected, `c` copies the picked word, or
+the whole definition when one is open; on the Words screen it copies the definition.
+
+Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. Without them,
+and over ssh, it asks the terminal to do it (OSC 52), which some terminals allow and
+others ignore; in tmux that takes `set -g set-clipboard on`.
+
 ### The mouse
 
-The wheel moves through lists and scrolls definitions, and a click picks a word. Because
-typeshelf uses the mouse itself, selecting text in the terminal while it runs needs
-`shift` held (`option` in macOS Terminal and iTerm2).
+The wheel moves through lists and scrolls definitions, a double-click defines a word,
+and dragging selects text. Because typeshelf uses the mouse itself, the terminal's own
+selection needs `shift` held while it runs (`option` in macOS Terminal and iTerm2).
 
 ## Files
 

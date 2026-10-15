@@ -534,6 +534,24 @@ pub fn cell_at(view: &TypingView, cells: &[Cell], at: Position) -> Option<usize>
     None
 }
 
+/// The cell nearest a screen position, for dragging a selection: the last cell of a row
+/// for a position past its end, and the first or last row shown for a position above or
+/// below the text.
+pub fn cell_near(view: &TypingView, cells: &[Cell], at: Position) -> Option<usize> {
+    let shown = view.rows.len().saturating_sub(view.first).min(view.col.height as usize);
+    let y = (at.y.saturating_sub(view.col.y) as usize).min(shown.checked_sub(1)?);
+    let row = &view.rows[view.first + y];
+    let mut x = view.col.x;
+    for &i in row {
+        let w = cell_width(&cells[i]);
+        if at.x < x + w.max(1) {
+            return Some(i);
+        }
+        x += w;
+    }
+    row.last().copied()
+}
+
 /// Where the open definition goes: under the word, or above it when there is more room there.
 pub fn definition_rect(app: &App, view: &TypingView, body: Rect) -> Option<Rect> {
     let t = app.typing.as_ref()?;
@@ -698,6 +716,7 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
     let (col, first, status) = (*col, *first, *status);
     let h = col.height as usize;
     let picked = t.lookup.as_ref().and_then(|l| t.words.get(l.word)).copied();
+    let selected = t.selection().unwrap_or_default();
 
     for (y, row) in rows.iter().enumerate().skip(first).take(h) {
         let mut spans = Vec::with_capacity(row.len());
@@ -721,7 +740,13 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
                 Mark::Correct if s.had_error[i] => (cell.ch, st.fixed),
                 Mark::Correct | Mark::Skipped => (cell.ch, st.base),
             };
-            let style = if picked.is_some_and(|(a, b)| a <= i && i < b) { st.sel.add_modifier(Modifier::BOLD) } else { style };
+            let style = if picked.is_some_and(|(a, b)| a <= i && i < b) {
+                st.sel.add_modifier(Modifier::BOLD)
+            } else if selected.contains(&i) {
+                st.sel
+            } else {
+                style
+            };
             if i == s.pos && t.result.is_none() && t.lookup.is_none() {
                 f.set_cursor_position(Position::new(col.x + x, col.y + (y - first) as u16));
             }
@@ -767,10 +792,13 @@ fn draw_typing<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'
     }
     if let Some(l) = &t.lookup {
         if let Some(r) = definition_rect(app, &view, area) {
-            draw_definition(f, app, &t.word(l.word), l.scroll, &[("s", "save"), ("esc", "close")], r, st);
-            return vec![("←→", "next word"), ("j/k", "scroll"), ("s", "save word"), ("esc", "close")];
+            draw_definition(f, app, &t.word(l.word), l.scroll, &[("s", "save"), ("c", "copy"), ("esc", "close")], r, st);
+            return vec![("←→", "next word"), ("j/k", "scroll"), ("s", "save word"), ("c", "copy"), ("esc", "close")];
         }
-        return vec![("←→ ↑↓", "pick a word"), ("[ ]", "uncommon words"), ("↵", "define"), ("tab", "back to typing")];
+        if l.anchor.is_some() {
+            return vec![("←→ ↑↓", "extend"), ("c", "copy"), ("esc", "cancel")];
+        }
+        return vec![("←→ ↑↓", "pick a word"), ("[ ]", "uncommon words"), ("↵", "define"), ("v", "select"), ("c", "copy"), ("tab", "back to typing")];
     }
     if let Some(r) = &t.result {
         let avg = avg_wpm(&app.state.history[..app.state.history.len().saturating_sub(1)], 20);
@@ -887,9 +915,9 @@ fn draw_words<'a>(f: &mut Frame, app: &App, area: Rect, st: &Styles) -> Vec<(&'a
     if app.words_searching {
         vec![("enter", "keep"), ("esc", "clear"), ("↑↓", "move")]
     } else if !q.is_empty() {
-        vec![("j/k", "move"), ("s", "save word"), ("J/K", "scroll"), ("/", "search"), ("esc", "clear"), ("?", "help")]
+        vec![("j/k", "move"), ("s", "save word"), ("c", "copy"), ("J/K", "scroll"), ("/", "search"), ("esc", "clear"), ("?", "help")]
     } else {
-        vec![("j/k", "move"), ("/", "look up a word"), ("J/K", "scroll"), ("d", "remove"), ("1", "library"), ("?", "help"), ("q", "back")]
+        vec![("j/k", "move"), ("/", "look up a word"), ("J/K", "scroll"), ("c", "copy"), ("d", "remove"), ("1", "library"), ("?", "help"), ("q", "back")]
     }
 }
 
@@ -1088,11 +1116,22 @@ fn draw_help(f: &mut Frame, screen: Screen, area: Rect, st: &Styles) {
                 ("backspace", "fix a mistake"),
                 ("ctrl-w  alt-backspace", "delete word"),
                 ("ctrl-r  ctrl-n  ctrl-p", "restart, next, previous page"),
-                ("tab  ctrl-d  click", "pick a word to look up, define one"),
+                ("tab  ctrl-d  double-click", "pick a word to look up, define one"),
+                ("drag", "select text and copy it"),
+                ("v  shift-arrows  c", "in look-up mode: select, copy"),
                 ("esc", "back to chapters"),
             ],
         ),
-        ("Words", &[("/", "look up any word"), ("s", "save the word to your list"), ("d", "remove a saved word"), ("J K  wheel", "scroll the definition")]),
+        (
+            "Words",
+            &[
+                ("/", "look up any word"),
+                ("s", "save the word to your list"),
+                ("d", "remove a saved word"),
+                ("c", "copy the definition"),
+                ("J K  wheel", "scroll the definition"),
+            ],
+        ),
     ];
     let mut lines = vec![];
     let current = match screen {
