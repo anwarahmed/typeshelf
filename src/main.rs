@@ -1,4 +1,5 @@
 mod app;
+mod dict;
 mod engine;
 mod library;
 mod log;
@@ -33,7 +34,7 @@ typeshelf - practice typing by retyping classic books
 Usage:
   typeshelf                 open the library
   typeshelf <file>          add a text or markdown file to your texts and open it
-  typeshelf sync            download every book for offline use
+  typeshelf sync            download every book, and the dictionary, for offline use
   typeshelf update          check for a newer release now and install it
   typeshelf --help | --version
 
@@ -82,6 +83,23 @@ fn main() -> ExitCode {
                 }
                 Err(e) => fail(&e),
             };
+        }
+        // Maintainer command: print what the dictionary says about words, to check lookups.
+        Some("define") => {
+            let d = match dict::Dictionary::open(&dict::dir()) {
+                Ok(d) => d,
+                Err(e) => return fail(&format!("no dictionary in {} ({e}); run `typeshelf sync` first", dict::dir().display())),
+            };
+            for word in &args[1..] {
+                println!("{word}: {}", if d.uncommon(word) { "uncommon" } else { "common or unknown" });
+                for e in d.define(word) {
+                    println!("  {}", e.lemma);
+                    for s in e.senses {
+                        println!("    {:<9} {}  {:?}  also {:?}", s.pos.label(), s.def, s.examples, s.also);
+                    }
+                }
+            }
+            return ExitCode::SUCCESS;
         }
         // Maintainer command: print how a file parses, to check the parser against a book.
         Some("dump") => {
@@ -216,6 +234,9 @@ fn run(app: &mut App) -> io::Result<()> {
     let mut cursor = String::new();
     let result = loop {
         app.tick();
+        if let Ok(size) = terminal.size() {
+            app.size = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+        }
         if cursor != app.settings.cursor {
             cursor = app.settings.cursor.clone();
             execute!(stdout(), cursor_style(&cursor))?;
@@ -264,6 +285,13 @@ fn sync(lib: &Library) -> ExitCode {
                 failed += 1;
                 eprintln!("[{}/{}] {} - failed: {e}", i + 1, todo.len(), b.title);
             }
+        }
+    }
+    if !dict::installed() {
+        println!("dictionary ({})", dict::DOWNLOAD_SIZE);
+        if let Err(e) = dict::download() {
+            failed += 1;
+            eprintln!("dictionary - failed: {e}");
         }
     }
     if failed > 0 {

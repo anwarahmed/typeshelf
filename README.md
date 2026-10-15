@@ -11,6 +11,8 @@ affiliated with or endorsed by TypeLit, and shares no code or content with it.
 - Your own texts: `typeshelf notes.txt`
 - Progress saved down to the character; reopen a chapter and the cursor is where you left it
 - Speed and accuracy per page, chapter and book; daily volume, most-missed keys and levels
+- A built-in dictionary: look up any word on the page with the keyboard or a click, keep
+  a list of the words you saved, and optionally show a glossary of the page's uncommon words
 - Themes, including one that follows your terminal's own colors
 
 ## Install
@@ -106,7 +108,7 @@ want to remove those too.
 ```
 typeshelf                 open the library
 typeshelf <file>          add a text or markdown file to your texts and open it
-typeshelf sync            download every book for offline use (about 330 MB)
+typeshelf sync            download every book and the dictionary for offline use (about 350 MB)
 typeshelf update          check for a newer release now and install it
 typeshelf --help          list commands and environment variables
 typeshelf --version       print the version and the commit it was built from
@@ -117,10 +119,12 @@ Press `?` for the keys of the screen you are on (everywhere except while typing,
 
 | Where    | Keys |
 |----------|------|
-| Lists and menus | `1` `2` `3` library / stats / settings · `j` `k`, arrows or the mouse wheel move · `g` `G` first / last · `ctrl-d` `ctrl-u` jump · `q` back |
+| Lists and menus | `1` `2` `3` `4` library / stats / settings / words · `j` `k`, arrows or the mouse wheel move · `g` `G` first / last · `ctrl-d` `ctrl-u` jump · `q` back |
 | Library  | `enter` open · `/` search · `tab` switch shelf · `s` sort · `c` continue last book · `d` delete one of your texts · `q` quit |
 | Book     | `enter` type chapter · `c` continue where you left off · `r` reset progress · `esc` back |
-| Typing   | `backspace` fix · `ctrl-w` or `alt-backspace` delete word · `ctrl-r` restart page · `ctrl-n` / `ctrl-p` next / previous page · `esc` back to chapters |
+| Typing   | `backspace` fix · `ctrl-w` or `alt-backspace` delete word · `ctrl-r` restart page · `ctrl-n` / `ctrl-p` next / previous page · `tab` look up words · `ctrl-d` define the word at the cursor · `esc` back to chapters |
+| Looking up | arrows or `h` `j` `k` `l` pick a word · `]` `[` next / previous uncommon word · `enter` define · `s` save to your word list · `esc` close · `tab` back to typing |
+| Words    | `/` look up any word · `s` save it · `d` remove a saved word · `J` `K` or the wheel scroll the definition |
 | Anywhere | `ctrl-c` quit |
 
 Leaving a page part-way keeps your place: the chapter reopens with the cursor where
@@ -134,17 +138,38 @@ The clock stops when you do. After five seconds without a key the status line sh
 "paused", and when you start typing again your speed carries on from where it was, so
 stepping away costs nothing.
 
-typeshelf uses the mouse wheel itself, so while it runs, selecting text in the terminal
-needs `shift` held (`option` in macOS Terminal and iTerm2).
+### Looking up words
+
+Press `tab` while typing to pick a word on the page, and `enter` to see what it means;
+`ctrl-d` jumps straight to the definition of the word at the cursor, and clicking a word
+does the same. The typing clock stops while you read and carries on afterwards, so a
+look-up never costs speed. `s` saves a word to your list, which is on the Words screen
+(`4`) along with a search of the whole dictionary.
+
+Settings → Glossary adds a panel beside the text, when the terminal is wide enough. It
+shows either the definition of the word at the cursor, or the page's uncommon words with
+their meanings; click one, or use `]` and `[` in look-up mode, to open it.
+
+The dictionary is [Open English WordNet](https://en-word.net/) (over 100,000 English words and phrases).
+It is downloaded the first time you look something up (10 MB, 25 MB unpacked) and kept
+with the cached books. It has nouns, verbs, adjectives and adverbs, but not words like
+"the" or "upon", and it is a modern dictionary: an old sense of a word may be missing.
+
+### The mouse
+
+The wheel moves through lists and scrolls definitions, and a click picks a word. Because
+typeshelf uses the mouse itself, selecting text in the terminal while it runs needs
+`shift` held (`option` in macOS Terminal and iTerm2).
 
 ## Files
 
 | What          | Where                                   |
 |---------------|-----------------------------------------|
 | Settings      | `~/.config/typeshelf/config.json`       |
-| Progress      | `~/.local/share/typeshelf/state.json`   |
+| Progress and saved words | `~/.local/share/typeshelf/state.json` |
 | Your texts    | `~/.local/share/typeshelf/texts/`       |
 | Book cache    | `~/.cache/typeshelf/books/`             |
+| Dictionary    | `~/.cache/typeshelf/dictionary/`        |
 | Log           | `~/.local/state/typeshelf/typeshelf.log` |
 
 The same paths are used on macOS; `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
@@ -183,3 +208,10 @@ embeds only a catalog (titles, authors, years and lengths), and downloads a book
 open it. That collection describes its titles as public domain; it includes works from
 as late as the 1960s whose status depends on your country, so check before
 redistributing any of the texts yourself.
+
+The dictionary is [Open English WordNet](https://github.com/globalwordnet/english-wordnet)
+2025 by the Open English WordNet team, derived from Princeton WordNet, under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); it is downloaded from its own
+release, not stored here. The list of common words the glossary leaves out
+(`assets/common-words.txt`) comes from [SCOWL](http://wordlist.aspell.net/) by Kevin
+Atkinson, whose permission notice is at the top of that file.

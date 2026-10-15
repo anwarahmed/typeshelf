@@ -70,6 +70,8 @@ fn save<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
 pub const PAGE_LENGTHS: [(&str, usize); 4] = [("short", 450), ("medium", 800), ("long", 1300), ("very long", 2200)];
 pub const TEXT_WIDTHS: [u16; 5] = [50, 60, 70, 80, 100];
 pub const CURSORS: [&str; 4] = ["terminal", "block", "bar", "underline"];
+/// What the glossary beside the text shows: nothing, the word at the cursor, or the page's uncommon words.
+pub const GLOSSARIES: [&str; 3] = ["off", "word", "page"];
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -83,6 +85,8 @@ pub struct Settings {
     pub live_stats: bool,
     /// Check GitHub for a newer release at startup and install it.
     pub auto_update: bool,
+    /// One of `GLOSSARIES`.
+    pub glossary: String,
     /// A local clone of classic-books-markdown, read instead of downloading.
     pub books_dir: Option<String>,
 }
@@ -98,6 +102,7 @@ impl Default for Settings {
             space_for_enter: true,
             live_stats: true,
             auto_update: true,
+            glossary: "off".into(),
             books_dir: None,
         }
     }
@@ -160,6 +165,17 @@ pub struct Record {
     pub mistakes: u32,
 }
 
+/// A word saved from a definition, for the word list.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct SavedWord {
+    /// Its dictionary form.
+    pub word: String,
+    /// The book it was met in (`Record::book`) and that book's title.
+    pub book: String,
+    pub title: String,
+    pub at: u64,
+}
+
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct State {
@@ -167,6 +183,8 @@ pub struct State {
     pub history: Vec<Record>,
     /// Mistakes per expected key, over all time.
     pub missed: HashMap<String, u32>,
+    /// The word list, oldest first.
+    pub words: Vec<SavedWord>,
 }
 
 impl State {
