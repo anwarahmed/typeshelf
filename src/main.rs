@@ -276,7 +276,8 @@ fn run(app: &mut App) -> io::Result<()> {
 }
 
 fn sync(lib: &Library) -> ExitCode {
-    let todo: Vec<_> = lib.books.iter().filter(|b| !b.mine && !lib.is_local(b)).collect();
+    // Read, not only looked for, so a cached file that is not a book is fetched again.
+    let todo: Vec<_> = lib.books.iter().filter(|b| !b.mine && lib.read_local(b).is_none()).collect();
     println!("{} of {} books to download", todo.len(), lib.books.iter().filter(|b| !b.mine).count());
     let mut failed = 0;
     for (i, b) in todo.iter().enumerate() {
