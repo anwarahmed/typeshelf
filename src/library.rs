@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
@@ -11,6 +12,40 @@ use crate::parse::parse_book;
 use crate::store::{cache_dir, data_dir, write_atomic};
 
 const REPO: &str = "mlschmitt/classic-books-markdown";
+
+/// Time limits for downloads, so a network that takes the connection but never answers
+/// (a captive portal, a dead proxy) ends in a message instead of a wait that never ends.
+/// The body gets long, because the dictionary is 10 MB on whatever line the user has.
+const LIMITS: Limits = Limits { connect: Duration::from_secs(15), response: Duration::from_secs(30), body: Duration::from_secs(300) };
+
+struct Limits {
+    /// Each of looking up the name and connecting.
+    connect: Duration,
+    /// From sending the request to the start of the answer.
+    response: Duration,
+    /// Receiving the whole body.
+    body: Duration,
+}
+
+/// Downloads `url` into memory (at most 64 MB), within the time limits.
+pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
+    fetch_within(url, &LIMITS)
+}
+
+fn fetch_within(url: &str, l: &Limits) -> Result<Vec<u8>, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_resolve(Some(l.connect))
+        .timeout_connect(Some(l.connect))
+        .timeout_recv_response(Some(l.response))
+        .timeout_recv_body(Some(l.body))
+        .build()
+        .into();
+    let said = |e: ureq::Error| match e {
+        ureq::Error::Timeout(_) => "no answer from the server in time; check the connection".to_string(),
+        e => e.to_string(),
+    };
+    agent.get(url).call().map_err(said)?.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(said)
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BookMeta {
@@ -102,8 +137,7 @@ impl Library {
 
     /// Downloads a book into the cache. Blocking; run it off the UI thread.
     pub fn download(url: &str, dest: &Path) -> Result<String, String> {
-        let mut res = ureq::get(url).call().map_err(|e| e.to_string())?;
-        let text = res.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| e.to_string())?;
+        let text = String::from_utf8(fetch(url)?).map_err(|_| "the book is not UTF-8 text".to_string())?;
         write_atomic(dest, &text).map_err(|e| format!("could not cache book: {e}"))?;
         Ok(text)
     }
@@ -206,4 +240,23 @@ pub fn build_catalog(repo: &Path, out: &Path) -> Result<usize, String> {
     let json = serde_json::to_string(&CatalogFile { rev, books }).map_err(|e| e.to_string())?;
     write_atomic(out, &json.replace("},{", "},\n{")).map_err(|e| e.to_string())?;
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn a_server_that_never_answers_times_out() {
+        // Takes the connection, then says nothing.
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/book.md", server.local_addr().unwrap());
+        let quick = Limits { connect: Duration::from_secs(2), response: Duration::from_millis(300), body: Duration::from_secs(2) };
+        let started = std::time::Instant::now();
+        let err = fetch_within(&url, &quick).unwrap_err();
+        assert!(err.starts_with("no answer from the server"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(server);
+    }
 }
