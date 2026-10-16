@@ -115,6 +115,11 @@ typeshelf --help          list commands and environment variables
 typeshelf --version       print the version and the commit it was built from
 ```
 
+Without a connection everything works except opening a book for the first time, the
+first look-up (which downloads the dictionary) and updating; those say they failed and
+are tried again next time. A download with no answer gives up after 15 to 30 seconds.
+Run `typeshelf sync` beforehand on a machine that will be offline.
+
 Press `?` for the keys of the screen you are on (everywhere except while typing, where
 `?` is a character to type). The short version:
 

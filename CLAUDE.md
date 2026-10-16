@@ -143,6 +143,13 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   `raw.githubusercontent.com` the first time it is opened and cached under
   `~/.cache/typeshelf/books/`. `typeshelf sync` fetches everything; `TYPESHELF_BOOKS` /
   `books_dir` point at an existing clone instead.
+- **Downloads have time limits** (since 0.3.2, asked for by the user). Books and the
+  dictionary go through `library::fetch`: 15 s each to resolve and connect, 30 s for
+  the answer to start, 5 min for the body (the dictionary is 10 MB on any line). Before,
+  they had none, so a network that took the connection and never answered (captive
+  portal, dead proxy) left a book "loading" and a look-up "Downloading…" for good. The
+  updater keeps its own limits in `update::get` (3 s check, 120 s download). A
+  silent proxy (`HTTPS_PROXY` at a listener that never answers) reproduces it.
 - **Book identity is its repo path** (`Author/Title.md`); user texts are `my/<slug>.md`.
   This is the key in `State::progress` and `Record::book`.
 - **XDG-style paths on both platforms** (`~/.config`, `~/.local/share`, `~/.cache`),

@@ -346,8 +346,7 @@ fn split_gloss(gloss: &str) -> (String, Vec<String>) {
 /// Downloads the dictionary, checks it, and unpacks it into `dir()`. Blocking; run it off
 /// the UI thread.
 pub fn download() -> Result<(), String> {
-    let mut res = ureq::get(URL).call().map_err(|e| e.to_string())?;
-    let zip = res.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(|e| e.to_string())?;
+    let zip = crate::library::fetch(URL)?;
     let sum: String = Sha256::digest(&zip).iter().map(|b| format!("{b:02x}")).collect();
     if sum != SHA256 {
         return Err("the dictionary download did not match its checksum".into());
