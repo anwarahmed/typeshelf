@@ -150,6 +150,14 @@ Flow: `Library` (catalog) → open book → `parse_book` → pick chapter → `p
   portal, dead proxy) left a book "loading" and a look-up "Downloading…" for good. The
   updater keeps its own limits in `update::get` (3 s check, 120 s download). A
   silent proxy (`HTTPS_PROXY` at a listener that never answers) reproduces it.
+- **A download must be a book to be cached** (since 0.3.3, asked for by the user).
+  Every book in the corpus starts with `# Title:` (checked over all 756), so
+  `library::is_book` requires it: a sign-in page or error page that answers in place of
+  the book is refused with a message, and a cached catalog book that fails it is read as
+  missing, so it is downloaded again (`read_local`; `sync` reads files rather than only
+  checking they exist, for the same reason). HTTPS already stops most such pages, since
+  a portal can't present GitHub's certificate; this covers what gets through. User texts
+  and a `books_dir` clone are not checked.
 - **Book identity is its repo path** (`Author/Title.md`); user texts are `my/<slug>.md`.
   This is the key in `State::progress` and `Record::book`.
 - **XDG-style paths on both platforms** (`~/.config`, `~/.local/share`, `~/.cache`),

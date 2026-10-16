@@ -27,6 +27,13 @@ struct Limits {
     body: Duration,
 }
 
+/// Whether a download is a book from the corpus: every one starts with its `# Title:`
+/// header. Anything else, such as a sign-in page from hotel Wi-Fi or a proxy's error
+/// page, is not cached.
+fn is_book(text: &str) -> bool {
+    text.trim_start_matches('\u{feff}').starts_with("# Title:")
+}
+
 /// Downloads `url` into memory (at most 64 MB), within the time limits.
 pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
     fetch_within(url, &LIMITS)
@@ -120,14 +127,15 @@ impl Library {
         self.local_path(meta).exists() || self.books_dir.as_ref().is_some_and(|d| d.join(&meta.path).exists())
     }
 
-    /// Reads a book from the user's clone or the cache; `None` means it needs downloading.
+    /// Reads a book from the user's clone or the cache; `None` means it needs downloading,
+    /// which includes a cached file that is not a book (saved before 0.3.3 checked).
     pub fn read_local(&self, meta: &BookMeta) -> Option<String> {
         if let Some(dir) = &self.books_dir
             && let Ok(s) = fs::read_to_string(dir.join(&meta.path))
         {
             return Some(s);
         }
-        fs::read_to_string(self.local_path(meta)).ok()
+        fs::read_to_string(self.local_path(meta)).ok().filter(|s| meta.mine || is_book(s))
     }
 
     pub fn url(&self, meta: &BookMeta) -> String {
@@ -138,6 +146,9 @@ impl Library {
     /// Downloads a book into the cache. Blocking; run it off the UI thread.
     pub fn download(url: &str, dest: &Path) -> Result<String, String> {
         let text = String::from_utf8(fetch(url)?).map_err(|_| "the book is not UTF-8 text".to_string())?;
+        if !is_book(&text) {
+            return Err("what came back is not a book (a network's sign-in page?); try again once connected".into());
+        }
         write_atomic(dest, &text).map_err(|e| format!("could not cache book: {e}"))?;
         Ok(text)
     }
@@ -258,5 +269,28 @@ mod tests {
         assert!(err.starts_with("no answer from the server"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(2));
         drop(server);
+    }
+
+    #[test]
+    fn a_page_that_is_not_a_book_is_not_cached() {
+        assert!(is_book("# Title: Emma\n## Author: Jane Austen\n"));
+        assert!(is_book("\u{feff}# Title: Emma\n"));
+        assert!(!is_book("<!DOCTYPE html><html><body>Sign in to the Wi-Fi</body></html>"));
+        assert!(!is_book(""));
+
+        // A server that answers every request with a sign-in page.
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/Jane%20Austen/Emma.md", server.local_addr().unwrap());
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut c, _) = server.accept().unwrap();
+            let _ = c.read(&mut [0; 4096]);
+            let page = "<html><body>Sign in</body></html>";
+            let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{page}", page.len());
+        });
+        let dest = std::env::temp_dir().join(format!("typeshelf-test-{}", std::process::id())).join("Emma.md");
+        let err = Library::download(&url, &dest).unwrap_err();
+        assert!(err.contains("not a book"), "{err}");
+        assert!(!dest.exists());
     }
 }
